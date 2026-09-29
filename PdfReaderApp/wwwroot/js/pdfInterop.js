@@ -80,7 +80,16 @@ function releaseDocument(id) {
     const doc = documents.get(id);
     refCounts.delete(id);
     documents.delete(id);
-    if (doc) {
+    if (!doc) {
+        return;
+    }
+
+    // pdf.js only exposes destroy on the loading task; older builds also had it on the
+    // document proxy, so use the task when available and fall back otherwise.
+    const task = doc.loadingTask;
+    if (task && typeof task.destroy === 'function') {
+        task.destroy();
+    } else if (typeof doc.destroy === 'function') {
         doc.destroy();
     }
 }

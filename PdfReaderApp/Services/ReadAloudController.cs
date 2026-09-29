@@ -38,7 +38,7 @@ public sealed class ReadAloudController : IDisposable
 {
     private static int nextOwnerId;
 
-    private readonly PdfInterop pdf;
+    private readonly IDocumentTextSource source;
     private readonly SpeechInterop speech;
     private readonly List<TextChunk> chunks = [];
     private readonly Dictionary<int, PageTextMap> pageMaps = [];
@@ -50,9 +50,9 @@ public sealed class ReadAloudController : IDisposable
     private int currentIndex = -1;
     private bool disposed;
 
-    public ReadAloudController(PdfInterop pdf, SpeechInterop speech)
+    public ReadAloudController(IDocumentTextSource source, SpeechInterop speech)
     {
-        this.pdf = pdf;
+        this.source = source;
         this.speech = speech;
 
         speech.StateChanged += OnSpeechStateChanged;
@@ -119,7 +119,7 @@ public sealed class ReadAloudController : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var pageText = await pdf.GetPageTextAsync(document, pageNumber);
+            var pageText = await source.GetPageTextAsync(document, pageNumber);
             var text = pageText?.Text ?? string.Empty;
             var ranges = BuildRanges(text, pageText?.Spans);
 
@@ -469,14 +469,14 @@ public sealed class ReadAloudController : IDisposable
     private static int EncodeUtteranceId(int owner, int chunkIndex, int batch)
         => (owner * 1_000_000) + ((chunkIndex + 1) * 100) + batch;
 
-    private static IReadOnlyList<PageTextSpanRange> BuildRanges(string text, IReadOnlyList<PdfTextSpan>? spans)
+    private static IReadOnlyList<PageTextSpanRange> BuildRanges(string text, IReadOnlyList<DocumentTextSpan>? spans)
     {
         if (spans is null || spans.Count == 0 || text.Length == 0)
         {
             return [];
         }
 
-        // pdf.js reports each item's offset while it concatenates the page text, so the
+        // The engine reports each item's offset while it builds the page text, so the
         // ranges are taken directly instead of being re-derived by searching the string.
         var ranges = new List<PageTextSpanRange>(spans.Count);
         foreach (var span in spans)

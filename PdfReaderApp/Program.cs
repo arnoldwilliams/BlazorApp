@@ -9,6 +9,8 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 builder.Services.AddScoped<PdfInterop>();
+builder.Services.AddScoped<DocxInterop>();
+builder.Services.AddScoped<ActiveDocumentSource>();
 builder.Services.AddScoped<SpeechInterop>();
 builder.Services.AddScoped<AudioExportService>();
 

@@ -2,7 +2,14 @@ using System.Text.Json.Serialization;
 
 namespace PdfReaderApp.Models;
 
-public sealed class PdfPageSize
+/// <summary>The document formats the reader can display.</summary>
+public enum DocumentFormat
+{
+    Pdf,
+    Docx,
+}
+
+public sealed class DocumentPageSize
 {
     [JsonPropertyName("width")]
     public double Width { get; set; }
@@ -11,7 +18,7 @@ public sealed class PdfPageSize
     public double Height { get; set; }
 }
 
-public sealed class PdfTextSpan
+public sealed class DocumentTextSpan
 {
     [JsonPropertyName("num")]
     public int Num { get; set; }
@@ -19,18 +26,22 @@ public sealed class PdfTextSpan
     [JsonPropertyName("text")]
     public string Text { get; set; } = string.Empty;
 
-    /// <summary>Offset of this span inside the page text returned by pdf.js.</summary>
+    /// <summary>Offset of this span inside the page text returned by the engine.</summary>
     [JsonPropertyName("start")]
     public int Start { get; set; }
+
+    /// <summary>Tags the span so the engine can rebuild mark-up (for example the heading level).</summary>
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
 }
 
-public sealed class PdfPageText
+public sealed class DocumentPageText
 {
     [JsonPropertyName("text")]
     public string Text { get; set; } = string.Empty;
 
     [JsonPropertyName("spans")]
-    public List<PdfTextSpan> Spans { get; set; } = [];
+    public List<DocumentTextSpan> Spans { get; set; } = [];
 }
 
 /// <summary>A contiguous run of prose queued for read aloud.</summary>
@@ -40,7 +51,7 @@ public sealed class TextChunk
 
     public int PageNumber { get; init; }
 
-    /// <summary>Offset of the chunk inside the page text returned by pdf.js.</summary>
+    /// <summary>Offset of the chunk inside the page text returned by the engine.</summary>
     public int Start { get; init; }
 
     public int Length { get; init; }

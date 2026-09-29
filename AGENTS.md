@@ -2,8 +2,8 @@
 
 ## Project
 
-`PdfReaderApp` — a .NET 10 Blazor WebAssembly PDF reader with read-aloud support.
-Located in `PdfReaderApp/`.
+`PdfReaderApp` — a .NET 10 Blazor WebAssembly document reader with read-aloud
+support. It opens PDF and Word (`.docx`) files. Located in `PdfReaderApp/`.
 
 ## Build and run
 
@@ -25,10 +25,21 @@ dotnet run --no-launch-profile --urls "http://0.0.0.0:12000"
 ## Architecture
 
 - `Pages/Viewer.razor` — document open, toolbar, sidebar, read-aloud controls.
-  Implements `IReadAloudHost` and acts as the JS interop host.
-- `Pages/PdfPageView.razor` — one page: canvas + PDF.js text layer. Receives
-  span offsets and the active highlight as parameters.
-- `Services/PdfInterop.cs` — C# wrapper over `wwwroot/js/pdfInterop.js`.
+  Implements `IReadAloudHost` and acts as the JS interop host. Picks the engine
+  for the opened file and points `ActiveDocumentSource` at it.
+- `Pages/DocumentPageView.razor` — one page: a canvas for the PDF engine plus the
+  engine's text layer. Receives span offsets and the active highlight as
+  parameters. The text layer class differs per format (`textLayer` for pdf.js,
+  `document-layer` for flow content).
+- `Models/DocumentModels.cs` — shared document/page/span/chunk models plus the
+  `DocumentFormat` enum.
+- `Services/DocumentEngine.cs` — the engine abstraction. `IDocumentEngine` covers
+  open/render/text/highlight/release; `IDocumentTextSource` is the subset the
+  read-aloud controller uses; `ActiveDocumentSource` forwards to the engine that
+  is currently showing a document.
+- `Services/PdfInterop.cs` — PDF engine, C# wrapper over `wwwroot/js/pdfInterop.js`.
+- `Services/DocxInterop.cs` — DOCX engine, C# wrapper over `wwwroot/js/docxInterop.js`
+  (mammoth.js under `wwwroot/lib/mammoth`).
 - `Services/SpeechInterop.cs` — wrapper over `wwwroot/js/speechInterop.js`
   (Web Speech API).
 - `Services/ReadAloudController.cs` — chunking, playback state, highlight ranges.
@@ -58,8 +69,30 @@ Voice files are resolved by meSpeak relative to the directory of its own script,
 so paths are written as `voices/en/en-us.json`, not `./lib/mespeak/voices/...`.
 A doubled path is a 404 and surfaces as an opaque "file error" from the worker.
 
+## DOCX support
+
+Word files are converted to HTML in the browser with mammoth.js and paginated
+client side so they reuse the same page model as PDFs:
+
+- `wwwroot/js/docxInterop.js` converts the file, splits the body into top level
+  blocks (a list is split per item so a long list can span pages), then measures
+  each block with an off screen element to decide where pages break. Blocks are
+  wrapped in numbered `span[data-num]` elements so click-to-read and highlighting
+  share the PDF offset model.
+- The measuring element and the rendered pages both use the `document-content`
+  class. Their typography must stay identical or measured heights will not match
+  what is drawn and content will overflow or leave gaps.
+- Pages are letter sized (816x1056 CSS px) and scaled with `transform` to the
+  requested zoom and rotation, so pagination is computed once at 100% and reflow
+  is unnecessary on zoom.
+- The converted HTML is sanitised before insertion: script-like tags are removed
+  and inline event handlers / `javascript:` URLs are stripped.
+
 ## Gotchas
 
+- pdf.js 6.x exposes `destroy` on the loading task, not on `PDFDocumentProxy`.
+  `wwwroot/js/pdfInterop.js` calls `doc.loadingTask.destroy()` with a fallback to
+  `doc.destroy()`, since older builds had the latter.
 - A Blazor method invoked from JS via `invokeMethodAsync` must carry
   `[JSInvokable]` on the concrete method, not only on the interface it
   implements.

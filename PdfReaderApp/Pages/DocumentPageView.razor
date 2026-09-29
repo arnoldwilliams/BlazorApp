@@ -1,25 +1,30 @@
-@inject PdfInterop Pdf
 @implements IAsyncDisposable
 
-<div class="pdf-page" data-page-number="@PageNumber">
-    <div class="pdf-canvas-wrapper" @ref="wrapperRef" style="@WrapperStyle">
-        <canvas @ref="canvasRef"></canvas>
-        <div class="textLayer" @ref="textLayerRef"></div>
+<div class="document-page" data-page-number="@PageNumber">
+    <div class="document-canvas-wrapper" @ref="wrapperRef" style="@WrapperStyle">
+        @if (RendersToCanvas)
+        {
+            <canvas @ref="canvasRef"></canvas>
+        }
+        <div class="@LayerCssClass" @ref="textLayerRef"></div>
     </div>
     @if (isRendering)
     {
-        <div class="pdf-page-loading">
+        <div class="document-page-loading">
             <span class="spinner-border spinner-border-sm"></span>
         </div>
     }
 </div>
 
 @code {
+    /// <summary>The engine that renders the document this page belongs to.</summary>
+    [Parameter, EditorRequired] public IDocumentEngine Engine { get; set; } = default!;
+
     [Parameter, EditorRequired] public string DocumentId { get; set; } = string.Empty;
 
     [Parameter] public int PageNumber { get; set; }
 
-    [Parameter] public PdfPageSize Size { get; set; } = new();
+    [Parameter] public DocumentPageSize Size { get; set; } = new();
 
     [Parameter] public double Zoom { get; set; } = 1.0;
 
@@ -43,6 +48,12 @@
     private string documentIdRendered = string.Empty;
     private string? appliedOffsetsKey;
     private string? appliedHighlightKey;
+
+    /// <summary>Only the PDF engine paints into a canvas; other engines render their own HTML.</summary>
+    private bool RendersToCanvas => Engine.Format == DocumentFormat.Pdf;
+
+    /// <summary>The PDF text layer uses the absolutely positioned pdf.js styles; other formats render flow content.</summary>
+    private string LayerCssClass => RendersToCanvas ? "textLayer" : "document-layer";
 
     private double DisplayWidth => (Rotation % 180 == 0 ? Size.Width : Size.Height) * Zoom;
 
@@ -76,8 +87,12 @@
         {
             // The canvas and the text layer must share the same scale and rotation or the
             // selectable text drifts away from the rendered glyphs.
-            await Pdf.RenderPageAsync(DocumentId, PageNumber, canvasRef, wrapperRef, Zoom, Rotation);
-            await Pdf.RenderTextLayerAsync(DocumentId, PageNumber, textLayerRef, Zoom, Rotation);
+            if (RendersToCanvas)
+            {
+                await Engine.RenderPageAsync(DocumentId, PageNumber, canvasRef, wrapperRef, Zoom, Rotation);
+            }
+
+            await Engine.RenderTextLayerAsync(DocumentId, PageNumber, textLayerRef, Zoom, Rotation);
         }
         catch (JSException)
         {
@@ -111,7 +126,7 @@
 
         try
         {
-            await Pdf.ApplySpanOffsetsAsync(textLayerRef, SpanOffsets);
+            await Engine.ApplySpanOffsetsAsync(textLayerRef, SpanOffsets);
             appliedOffsetsKey = key;
         }
         catch (JSException)
@@ -132,11 +147,11 @@
         {
             if (Highlight is null)
             {
-                await Pdf.ClearHighlightAsync(textLayerRef);
+                await Engine.ClearHighlightAsync(textLayerRef);
             }
             else
             {
-                await Pdf.HighlightRangeAsync(textLayerRef, Highlight.Start, Highlight.Length);
+                await Engine.HighlightRangeAsync(textLayerRef, Highlight.Start, Highlight.Length);
             }
         }
         catch (JSException)
@@ -151,7 +166,7 @@
     {
         try
         {
-            await Pdf.ClearHighlightAsync(textLayerRef);
+            await Engine.ClearHighlightAsync(textLayerRef);
         }
         catch (Exception)
         {

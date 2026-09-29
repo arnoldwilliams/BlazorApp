@@ -3,23 +3,25 @@
 @using PdfReaderApp.Models
 @using PdfReaderApp.Services
 @inject PdfInterop Pdf
+@inject DocxInterop Docx
+@inject ActiveDocumentSource ActiveSource
 @inject SpeechInterop Speech
 @inject AudioExportService Audio
 @inject IJSRuntime JS
-@implements IPdfDocumentHost
-@implements IPdfPageVisibilityHost
+@implements IDocumentTextHost
+@implements IDocumentPageVisibilityHost
 @implements IReadAloudHost
 @implements IAsyncDisposable
 @implements IDisposable
 
-<PageTitle>PDF Reader</PageTitle>
+<PageTitle>Document Reader</PageTitle>
 
 <div class="reader-shell">
     <header class="reader-toolbar">
         <div class="toolbar-group">
             <label class="btn btn-primary mb-0">
-                Open PDF
-                <InputFile OnChange="OnFileSelected" accept="application/pdf,.pdf" hidden />
+                Open document
+                <InputFile OnChange="OnFileSelected" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
             </label>
             @if (IsLoading)
             {
@@ -80,11 +82,11 @@
             {
                 <div class="empty-state">
                     <div class="empty-state-inner">
-                        <h1>&#128462; PDF Reader</h1>
-                        <p>Open a PDF file to display it here, then use the reader controls to have the document read aloud.</p>
+                        <h1>&#128462; Document Reader</h1>
+                        <p>Open a PDF or Word (DOCX) file to display it here, then use the reader controls to have the document read aloud.</p>
                         <label class="btn btn-primary btn-lg">
-                            Choose a PDF file
-                            <InputFile OnChange="OnFileSelected" accept="application/pdf,.pdf" hidden />
+                            Choose a document
+                            <InputFile OnChange="OnFileSelected" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
                         </label>
                         <p class="text-muted small mt-3 mb-0">
                             Files are processed entirely in your browser. Nothing is uploaded.
@@ -96,26 +98,28 @@
             {
                 @foreach (var pageEntry in Pages)
                 {
-                    <PdfPageView DocumentId="@DocumentId"
-                                 PageNumber="@pageEntry.PageNumber"
-                                 Size="@pageEntry.Size"
-                                 Zoom="@Zoom"
-                                 Rotation="@RotationDegrees"
-                                 Render="@pageEntry.ShouldRender"
-                                 SpanOffsets="@GetSpanOffsets(pageEntry.PageNumber)"
-                                 Highlight="@GetHighlight(pageEntry.PageNumber)" />
+                    <DocumentPageView Engine="@Engine"
+                                      DocumentId="@DocumentId"
+                                      PageNumber="@pageEntry.PageNumber"
+                                      Size="@pageEntry.Size"
+                                      Zoom="@Zoom"
+                                      Rotation="@RotationDegrees"
+                                      Render="@pageEntry.ShouldRender"
+                                      SpanOffsets="@GetSpanOffsets(pageEntry.PageNumber)"
+                                      Highlight="@GetHighlight(pageEntry.PageNumber)" />
                 }
             }
             else
             {
-                <PdfPageView DocumentId="@DocumentId"
-                             PageNumber="@CurrentPage"
-                             Size="@(Pages.Count >= CurrentPage ? Pages[CurrentPage - 1].Size : new PdfPageSize { Width = 612, Height = 792 })"
-                             Zoom="@Zoom"
-                             Rotation="@RotationDegrees"
-                             Render="true"
-                             SpanOffsets="@GetSpanOffsets(CurrentPage)"
-                             Highlight="@GetHighlight(CurrentPage)" />
+                <DocumentPageView Engine="@Engine"
+                                  DocumentId="@DocumentId"
+                                  PageNumber="@CurrentPage"
+                                  Size="@(Pages.Count >= CurrentPage ? Pages[CurrentPage - 1].Size : new DocumentPageSize { Width = 612, Height = 792 })"
+                                  Zoom="@Zoom"
+                                  Rotation="@RotationDegrees"
+                                  Render="true"
+                                  SpanOffsets="@GetSpanOffsets(CurrentPage)"
+                                  Highlight="@GetHighlight(CurrentPage)" />
             }
         </section>
 
@@ -164,7 +168,7 @@
                             </button>
                         </div>
 
-                        <button class="btn btn-outline-secondary" @onclick="ReadSelection" title="Read the text selected in the PDF">
+                        <button class="btn btn-outline-secondary" @onclick="ReadSelection" title="Read the text selected in the document">
                             &ldquo; Read selection
                         </button>
                     </div>
@@ -255,7 +259,7 @@
                 }
                 else if (!DocumentLoaded)
                 {
-                    <p class="text-muted small mb-0">Open a PDF to save its spoken audio.</p>
+                    <p class="text-muted small mb-0">Open a document to save its spoken audio.</p>
                 }
                 else
                 {
@@ -378,6 +382,13 @@
     private ReadAloudController readAloudController = null!;
     private readonly List<PageEntry> pages = new();
 
+    /// <summary>Engine rendering the open document. Defaults to the PDF engine until a file is chosen.</summary>
+    private IDocumentEngine? engine;
+
+    /// <summary>Engine that currently owns the text layer host token and the page observer.</summary>
+    private IDocumentEngine? hostEngine;
+    private IDocumentEngine? visibilityEngine;
+
     private ElementReference viewportRef;
     private IJSObjectReference? clipboardModule;
 
@@ -464,6 +475,8 @@
 
     private ReadAloudController ReadAloud => readAloudController;
 
+    private IDocumentEngine Engine => engine ?? Pdf;
+
     private IReadOnlyList<PageEntry> Pages => pages;
 
     private bool CanGoPrevious => DocumentLoaded && CurrentPage > 1;
@@ -478,7 +491,7 @@
 
     protected override async Task OnInitializedAsync()
     {
-        readAloudController = new ReadAloudController(Pdf, Speech);
+        readAloudController = new ReadAloudController(ActiveSource, Speech);
         readAloudController.Changed += OnReadAloudChanged;
         Audio.ProgressChanged += OnExportProgress;
         await Task.CompletedTask;
@@ -492,7 +505,7 @@
             SpeechSupported = Speech.IsSupported;
             await LoadVoicesAsync();
 
-            documentHostToken = await Pdf.AttachHostAsync(this);
+            await AttachHostAsync(Pdf);
             await RefreshVisibilityObserverAsync();
 
             AudioSupported = true;
@@ -527,7 +540,27 @@
             return;
         }
 
-        visibilityToken = await Pdf.ObservePagesAsync(viewportRef, this);
+        if (visibilityToken is not null && visibilityEngine is not null)
+        {
+            await visibilityEngine.UnobservePagesAsync(visibilityToken);
+            visibilityToken = null;
+        }
+
+        visibilityToken = await Engine.ObservePagesAsync(viewportRef, this);
+        visibilityEngine = Engine;
+    }
+
+    /// <summary>Registers the text layer host on an engine, releasing it from the previous one.</summary>
+    private async Task AttachHostAsync(IDocumentEngine target)
+    {
+        if (documentHostToken is not null && hostEngine is not null && !ReferenceEquals(hostEngine, target))
+        {
+            await hostEngine.DetachHostAsync(documentHostToken);
+            documentHostToken = null;
+        }
+
+        documentHostToken = await target.AttachHostAsync(this);
+        hostEngine = target;
     }
 
     private async Task OnFileSelected(InputFileChangeEventArgs args)
@@ -548,8 +581,12 @@
 
             if (DocumentLoaded && !string.IsNullOrEmpty(DocumentId))
             {
-                await Pdf.ReleaseDocumentAsync(DocumentId);
+                await Engine.ReleaseDocumentAsync(DocumentId);
             }
+
+            var target = SelectEngine(file.Name);
+            engine = target;
+            ActiveSource.Current = target;
 
             pages.Clear();
             CurrentPage = 1;
@@ -565,10 +602,12 @@
             DocumentName = file.Name;
             DocumentSize = bytes.LongLength;
 
-            PageCount = await Pdf.OpenDocumentAsync(DocumentId, bytes);
+            PageCount = await target.OpenDocumentAsync(DocumentId, bytes);
             DocumentLoaded = true;
 
-            var sizes = await Pdf.GetAllPageSizesAsync(DocumentId);
+            await AttachHostAsync(target);
+
+            var sizes = await target.GetAllPageSizesAsync(DocumentId);
             for (var index = 0; index < sizes.Length; index++)
             {
                 pages.Add(new PageEntry(index + 1, sizes[index], index < 3));
@@ -585,7 +624,7 @@
             }
             else
             {
-                StatusMessage = $"Loaded {PageCount} page(s). Ready to read aloud.";
+                StatusMessage = $"Loaded {PageCount} page(s) from {target.DisplayName}. Ready to read aloud.";
                 StatusAlertClass = "success";
             }
 
@@ -601,7 +640,7 @@
         catch (Exception ex)
         {
             DocumentLoaded = false;
-            StatusMessage = $"Could not open the PDF: {ex.Message}";
+            StatusMessage = $"Could not open the document: {ex.Message}";
             StatusAlertClass = "danger";
         }
         finally
@@ -611,13 +650,23 @@
         }
     }
 
+    /// <summary>Picks the engine that handles the file, based on its extension.</summary>
+    private IDocumentEngine SelectEngine(string fileName)
+    {
+        var extension = Path.GetExtension(fileName);
+
+        return extension.Equals(".docx", StringComparison.OrdinalIgnoreCase)
+            ? Docx
+            : Pdf;
+    }
+
     private async Task CloseDocument()
     {
         await readAloudController.StopAsync();
 
         if (!string.IsNullOrEmpty(DocumentId))
         {
-            await Pdf.ReleaseDocumentAsync(DocumentId);
+            await Engine.ReleaseDocumentAsync(DocumentId);
         }
 
         pages.Clear();
@@ -647,7 +696,7 @@
 
         if (IsContinuous)
         {
-            await Pdf.ScrollToPageAsync(viewportRef, CurrentPage);
+            await Engine.ScrollToPageAsync(viewportRef, CurrentPage);
         }
     }
 
@@ -925,7 +974,7 @@
             return;
         }
 
-        var pageText = await Pdf.GetPageTextAsync(DocumentId, CurrentPage);
+        var pageText = await Engine.GetPageTextAsync(DocumentId, CurrentPage);
         CurrentPageText = pageText?.Text ?? string.Empty;
     }
 
@@ -980,7 +1029,7 @@
         return $"{value:0.#} {units[unit]}";
     }
 
-    // IPdfDocumentHost: a span in the text layer was clicked, so start reading from there.
+    // IDocumentTextHost: a span in the text layer was clicked, so start reading from there.
     [JSInvokable]
     public async Task OnTextSpanClickAsync(int pageNumber, int spanNumber)
     {
@@ -1001,7 +1050,7 @@
         });
     }
 
-    // IPdfPageVisibilityHost
+    // IDocumentPageVisibilityHost
     public Task OnPageVisibleAsync(int pageNumber)
     {
         var index = pageNumber - 1;
@@ -1052,7 +1101,7 @@
 
             if (IsContinuous)
             {
-                await Pdf.ScrollToPageAsync(viewportRef, pageNumber);
+                await Engine.ScrollToPageAsync(viewportRef, pageNumber);
             }
         });
     }
@@ -1088,18 +1137,18 @@
 
         if (!string.IsNullOrEmpty(DocumentId))
         {
-            await Pdf.ReleaseDocumentAsync(DocumentId);
+            await Engine.ReleaseDocumentAsync(DocumentId);
         }
 
-        if (documentHostToken is not null)
+        if (documentHostToken is not null && hostEngine is not null)
         {
-            await Pdf.DetachHostAsync(documentHostToken);
+            await hostEngine.DetachHostAsync(documentHostToken);
             documentHostToken = null;
         }
 
-        if (visibilityToken is not null)
+        if (visibilityToken is not null && visibilityEngine is not null)
         {
-            await Pdf.UnobservePagesAsync(visibilityToken);
+            await visibilityEngine.UnobservePagesAsync(visibilityToken);
             visibilityToken = null;
         }
 
@@ -1112,7 +1161,7 @@
 
     private sealed class PageEntry
     {
-        public PageEntry(int pageNumber, PdfPageSize size, bool shouldRender)
+        public PageEntry(int pageNumber, DocumentPageSize size, bool shouldRender)
         {
             PageNumber = pageNumber;
             Size = size;
@@ -1121,7 +1170,7 @@
 
         public int PageNumber { get; }
 
-        public PdfPageSize Size { get; }
+        public DocumentPageSize Size { get; }
 
         public bool ShouldRender { get; set; }
     }

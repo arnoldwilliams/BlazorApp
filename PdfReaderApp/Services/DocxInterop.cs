@@ -5,9 +5,11 @@ using PdfReaderApp.Models;
 namespace PdfReaderApp.Services;
 
 /// <summary>
-/// Thin wrapper over the pdf.js ES module in <c>wwwroot/js/pdfInterop.js</c>.
+/// Document engine for Word files, backed by the mammoth.js module in
+/// <c>wwwroot/js/docxInterop.js</c>. The document is converted to HTML and paginated
+/// in the browser, then rendered with the same page model as the PDF reader.
 /// </summary>
-public sealed class PdfInterop : IDocumentEngine
+public sealed class DocxInterop : IDocumentEngine
 {
     private readonly IJSRuntime js;
     private IJSObjectReference? module;
@@ -17,14 +19,14 @@ public sealed class PdfInterop : IDocumentEngine
     /// <summary>Token stamped onto text layers so clicks route back to the attached host.</summary>
     private string? hostToken;
 
-    public PdfInterop(IJSRuntime js)
+    public DocxInterop(IJSRuntime js)
     {
         this.js = js;
     }
 
-    public DocumentFormat Format => DocumentFormat.Pdf;
+    public DocumentFormat Format => DocumentFormat.Docx;
 
-    public string DisplayName => "PDF";
+    public string DisplayName => "Word document";
 
     public bool IsInitialized => module is not null;
 
@@ -35,14 +37,13 @@ public sealed class PdfInterop : IDocumentEngine
             return;
         }
 
-        module = await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, "./js/pdfInterop.js");
-        await module.InvokeVoidAsync("ensureTextLayerStyles", cancellationToken);
+        module = await js.InvokeAsync<IJSObjectReference>("import", cancellationToken, "./js/docxInterop.js");
     }
 
     public async Task<int> OpenDocumentAsync(string documentId, byte[] bytes, CancellationToken cancellationToken = default)
     {
         await InitializeAsync(cancellationToken);
-        return await module!.InvokeAsync<int>("openDocument", cancellationToken, documentId, bytes, null);
+        return await module!.InvokeAsync<int>("openDocument", cancellationToken, documentId, bytes);
     }
 
     public async Task ReleaseDocumentAsync(string documentId)
@@ -55,7 +56,6 @@ public sealed class PdfInterop : IDocumentEngine
         await module.InvokeVoidAsync("releaseDocument", documentId);
     }
 
-    /// <summary>Sizes of every page, used to lay out the continuous view before rendering.</summary>
     public async Task<DocumentPageSize[]> GetAllPageSizesAsync(string documentId)
     {
         await InitializeAsync();
@@ -82,7 +82,7 @@ public sealed class PdfInterop : IDocumentEngine
         double rotationDegrees)
     {
         await InitializeAsync();
-        // The host token is stamped onto the layer so clicks route back to this viewer.
+        // The host token is stamped onto the page so clicks route back to this viewer.
         await module!.InvokeVoidAsync("renderTextLayer", documentId, pageNumber, container, scale, rotationDegrees, hostToken);
     }
 
@@ -92,14 +92,12 @@ public sealed class PdfInterop : IDocumentEngine
         return await module!.InvokeAsync<DocumentPageText>("getPageText", documentId, pageNumber);
     }
 
-    /// <summary>Maps text spans to offsets in the page text so spoken ranges can highlight them.</summary>
     public async Task ApplySpanOffsetsAsync(ElementReference container, IReadOnlyList<PageTextSpanRange> ranges)
     {
         await InitializeAsync();
         await module!.InvokeVoidAsync("applySpanOffsets", container, ranges);
     }
 
-    /// <summary>Highlights spans intersecting the range and returns the highlighted span numbers.</summary>
     public async Task<int[]> HighlightRangeAsync(ElementReference container, int start, int length)
     {
         if (module is null)

@@ -1,5 +1,5 @@
-/* Custom page wrappers above the text layer. */
-.pdf-page {
+/* Custom page wrappers above the text layer, shared by every document format. */
+.document-page {
     position: relative;
     margin: 0 auto 1rem;
     background: #fff;
@@ -9,13 +9,77 @@
     width: fit-content;
     max-width: 100%;
 }
-.pdf-page-loading {
+.document-canvas-wrapper {
+    position: relative;
+}
+.document-page-loading {
     position: absolute;
     inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     background: rgba(255, 255, 255, 0.55);
+}
+
+/* Flow content layers (currently the DOCX engine) scale and rotate as one block. */
+.document-layer {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: #fff;
+    transform-origin: 0 0;
+    z-index: 1;
+}
+
+/* Typography shared by the rendered layer and the off screen measuring element that
+   decides where pages break. They must match or content will overflow the page. */
+.document-content {
+    color: #202124;
+    line-height: 1.5;
+    text-align: left;
+}
+.document-content :is(h1, h2, h3, h4, h5, h6) {
+    margin: 0.6em 0 0.3em;
+    line-height: 1.25;
+}
+.document-content :is(h1) { font-size: 1.8em; }
+.document-content :is(h2) { font-size: 1.5em; }
+.document-content :is(h3) { font-size: 1.25em; }
+.document-content :is(p, ul, ol, blockquote) {
+    margin: 0 0 0.7em;
+}
+.document-content :is(ul, ol) {
+    padding-left: 1.6em;
+}
+.document-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 0.7em;
+}
+.document-content :is(td, th) {
+    border: 1px solid #c9ccd1;
+    padding: 0.25em 0.5em;
+    vertical-align: top;
+}
+.document-content img,
+.document-content svg {
+    max-width: 100%;
+    height: auto;
+}
+/* The measuring element is laid out on the page but never shown. */
+.docx-measure {
+    position: absolute;
+    left: -10000px;
+    top: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+/* Highlight applied to the passage that is currently being spoken. */
+.document-layer span.docx-speak-highlight {
+    background: rgba(255, 214, 0, 0.45);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(255, 170, 0, 0.65);
 }
 
 /* Text layer shared by every page. */

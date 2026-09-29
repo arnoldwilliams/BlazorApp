@@ -58,8 +58,8 @@
     background: #525659;
 }
 
-.reader-viewport.single .pdf-page,
-.reader-body.single .pdf-page {
+.reader-viewport.single .document-page,
+.reader-body.single .document-page {
     margin-top: 0;
 }
 
