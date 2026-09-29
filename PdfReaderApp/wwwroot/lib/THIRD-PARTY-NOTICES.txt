@@ -1,0 +1,21 @@
+Third-party libraries bundled with this application
+==================================================
+
+mespeak / meSpeak.js (v2.0.7, based on speak.js and eSpeak)
+  Used for offline text-to-speech synthesis during audio export.
+  Source: https://www.masswerk.at/mespeak
+  Licence: GNU GPL (eSpeak and the code derived from speak.js are GPL).
+  Files: mespeak.js, mespeak-core.js, voices/*
+
+lamejs (v1.2.1, by Alex Zhukov, a JavaScript port of LAME)
+  Used to encode synthesised audio as MP3.
+  Source: https://github.com/zhuker/lamejs
+  Licence: LGPL-3.0. LAME is used here unmodified, linked as a separate
+  script (lame.min.js), as required by the LGPL.
+  Files: ../lamejs/lame.min.js
+
+pdf.js
+  Used to render PDF documents and expose their text layer.
+  Source: https://mozilla.github.io/pdf.js/
+  Licence: Apache-2.0
+  Files: ../pdfjs/*

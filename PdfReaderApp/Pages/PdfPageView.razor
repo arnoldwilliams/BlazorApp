@@ -1,0 +1,161 @@
+@inject PdfInterop Pdf
+@implements IAsyncDisposable
+
+<div class="pdf-page" data-page-number="@PageNumber">
+    <div class="pdf-canvas-wrapper" @ref="wrapperRef" style="@WrapperStyle">
+        <canvas @ref="canvasRef"></canvas>
+        <div class="textLayer" @ref="textLayerRef"></div>
+    </div>
+    @if (isRendering)
+    {
+        <div class="pdf-page-loading">
+            <span class="spinner-border spinner-border-sm"></span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string DocumentId { get; set; } = string.Empty;
+
+    [Parameter] public int PageNumber { get; set; }
+
+    [Parameter] public PdfPageSize Size { get; set; } = new();
+
+    [Parameter] public double Zoom { get; set; } = 1.0;
+
+    [Parameter] public double Rotation { get; set; }
+
+    /// <summary>When true the page is close enough to the viewport to be painted.</summary>
+    [Parameter] public bool Render { get; set; }
+
+    [Parameter] public IReadOnlyList<PageTextSpanRange>? SpanOffsets { get; set; }
+
+    [Parameter] public PageHighlight? Highlight { get; set; }
+
+    private ElementReference canvasRef;
+    private ElementReference textLayerRef;
+    private ElementReference wrapperRef;
+
+    private bool hasRendered;
+    private bool isRendering;
+    private double renderedZoom = -1;
+    private double renderedRotation = -1;
+    private string documentIdRendered = string.Empty;
+    private string? appliedOffsetsKey;
+    private string? appliedHighlightKey;
+
+    private double DisplayWidth => (Rotation % 180 == 0 ? Size.Width : Size.Height) * Zoom;
+
+    private double DisplayHeight => (Rotation % 180 == 0 ? Size.Height : Size.Width) * Zoom;
+
+    private string WrapperStyle => FormattableString.Invariant($"width:{DisplayWidth}px;height:{DisplayHeight}px;");
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Render && (!hasRendered
+            || renderedZoom != Zoom
+            || renderedRotation != Rotation
+            || documentIdRendered != DocumentId))
+        {
+            await RenderPageAsync();
+            return;
+        }
+
+        if (hasRendered)
+        {
+            await ApplySpanOffsetsAsync();
+            await ApplyHighlightAsync();
+        }
+    }
+
+    private async Task RenderPageAsync()
+    {
+        isRendering = true;
+
+        try
+        {
+            // The canvas and the text layer must share the same scale and rotation or the
+            // selectable text drifts away from the rendered glyphs.
+            await Pdf.RenderPageAsync(DocumentId, PageNumber, canvasRef, wrapperRef, Zoom, Rotation);
+            await Pdf.RenderTextLayerAsync(DocumentId, PageNumber, textLayerRef, Zoom, Rotation);
+        }
+        catch (JSException)
+        {
+            // Rendering can fail when the canvas was detached by a fast navigation.
+        }
+
+        hasRendered = true;
+        renderedZoom = Zoom;
+        renderedRotation = Rotation;
+        documentIdRendered = DocumentId;
+        appliedOffsetsKey = null;
+        appliedHighlightKey = null;
+        isRendering = false;
+
+        await ApplySpanOffsetsAsync();
+        await ApplyHighlightAsync();
+    }
+
+    private async Task ApplySpanOffsetsAsync()
+    {
+        if (SpanOffsets is null || SpanOffsets.Count == 0)
+        {
+            return;
+        }
+
+        var key = $"{SpanOffsets.Count}:{SpanOffsets[0].Start}:{SpanOffsets[^1].End}";
+        if (key == appliedOffsetsKey)
+        {
+            return;
+        }
+
+        try
+        {
+            await Pdf.ApplySpanOffsetsAsync(textLayerRef, SpanOffsets);
+            appliedOffsetsKey = key;
+        }
+        catch (JSException)
+        {
+            // The text layer may have been replaced by a concurrent render.
+        }
+    }
+
+    private async Task ApplyHighlightAsync()
+    {
+        var key = Highlight is null ? null : $"{Highlight.Start}:{Highlight.Length}";
+        if (key == appliedHighlightKey)
+        {
+            return;
+        }
+
+        try
+        {
+            if (Highlight is null)
+            {
+                await Pdf.ClearHighlightAsync(textLayerRef);
+            }
+            else
+            {
+                await Pdf.HighlightRangeAsync(textLayerRef, Highlight.Start, Highlight.Length);
+            }
+        }
+        catch (JSException)
+        {
+            // The text layer may have been replaced by a concurrent render.
+        }
+
+        appliedHighlightKey = key;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await Pdf.ClearHighlightAsync(textLayerRef);
+        }
+        catch (Exception)
+        {
+            // The JS runtime may already be gone during shutdown.
+        }
+    }
+}

@@ -1,0 +1,1128 @@
+@page "/"
+@page "/viewer"
+@using PdfReaderApp.Models
+@using PdfReaderApp.Services
+@inject PdfInterop Pdf
+@inject SpeechInterop Speech
+@inject AudioExportService Audio
+@inject IJSRuntime JS
+@implements IPdfDocumentHost
+@implements IPdfPageVisibilityHost
+@implements IReadAloudHost
+@implements IAsyncDisposable
+@implements IDisposable
+
+<PageTitle>PDF Reader</PageTitle>
+
+<div class="reader-shell">
+    <header class="reader-toolbar">
+        <div class="toolbar-group">
+            <label class="btn btn-primary mb-0">
+                Open PDF
+                <InputFile OnChange="OnFileSelected" accept="application/pdf,.pdf" hidden />
+            </label>
+            @if (IsLoading)
+            {
+                <span class="spinner-border spinner-border-sm text-light ms-2" role="status"></span>
+            }
+        </div>
+
+        <div class="toolbar-group">
+            <button class="btn btn-outline-light" @onclick="PreviousPage" disabled="@(!CanGoPrevious)" title="Previous page">
+                &laquo;
+            </button>
+            <span class="page-indicator">
+                @if (PageCount > 0)
+                {
+                    <input type="number" min="1" max="@PageCount" value="@CurrentPage" @onchange="OnPageNumberChanged" />
+                    <span>/ @PageCount</span>
+                }
+                else
+                {
+                    <span>&mdash;</span>
+                }
+            </span>
+            <button class="btn btn-outline-light" @onclick="NextPage" disabled="@(!CanGoNext)" title="Next page">
+                &raquo;
+            </button>
+        </div>
+
+        <div class="toolbar-group">
+            <button class="btn btn-outline-light" @onclick="ZoomOut" disabled="@(!CanZoomOut)" title="Zoom out">&minus;</button>
+            <span class="zoom-label">@($"{Zoom * 100:0}%")</span>
+            <button class="btn btn-outline-light" @onclick="ZoomIn" disabled="@(!CanZoomIn)" title="Zoom in">&plus;</button>
+            <button class="btn btn-outline-light" @onclick="ResetZoom" title="Reset zoom">Reset</button>
+            <button class="btn btn-outline-light" @onclick="Rotate" title="Rotate clockwise">
+                Rotate
+            </button>
+        </div>
+
+        <div class="toolbar-group">
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="continuous-toggle" checked="@IsContinuous" @onchange="OnContinuousChanged" />
+                <label class="form-check-label" for="continuous-toggle">Scroll view</label>
+            </div>
+            @if (DocumentLoaded)
+            {
+                <button class="btn btn-outline-light" @onclick="CloseDocument" title="Close document">Close</button>
+            }
+        </div>
+    </header>
+
+    @if (!string.IsNullOrEmpty(StatusMessage))
+    {
+        <div class="alert alert-@StatusAlertClass m-2 py-2 mb-0" role="alert">@StatusMessage</div>
+    }
+
+    <div class="reader-body @(IsContinuous ? "continuous" : "single")">
+        <section class="reader-viewport" @ref="viewportRef">
+            @if (!DocumentLoaded)
+            {
+                <div class="empty-state">
+                    <div class="empty-state-inner">
+                        <h1>&#128462; PDF Reader</h1>
+                        <p>Open a PDF file to display it here, then use the reader controls to have the document read aloud.</p>
+                        <label class="btn btn-primary btn-lg">
+                            Choose a PDF file
+                            <InputFile OnChange="OnFileSelected" accept="application/pdf,.pdf" hidden />
+                        </label>
+                        <p class="text-muted small mt-3 mb-0">
+                            Files are processed entirely in your browser. Nothing is uploaded.
+                        </p>
+                    </div>
+                </div>
+            }
+            else if (IsContinuous)
+            {
+                @foreach (var pageEntry in Pages)
+                {
+                    <PdfPageView DocumentId="@DocumentId"
+                                 PageNumber="@pageEntry.PageNumber"
+                                 Size="@pageEntry.Size"
+                                 Zoom="@Zoom"
+                                 Rotation="@RotationDegrees"
+                                 Render="@pageEntry.ShouldRender"
+                                 SpanOffsets="@GetSpanOffsets(pageEntry.PageNumber)"
+                                 Highlight="@GetHighlight(pageEntry.PageNumber)" />
+                }
+            }
+            else
+            {
+                <PdfPageView DocumentId="@DocumentId"
+                             PageNumber="@CurrentPage"
+                             Size="@(Pages.Count >= CurrentPage ? Pages[CurrentPage - 1].Size : new PdfPageSize { Width = 612, Height = 792 })"
+                             Zoom="@Zoom"
+                             Rotation="@RotationDegrees"
+                             Render="true"
+                             SpanOffsets="@GetSpanOffsets(CurrentPage)"
+                             Highlight="@GetHighlight(CurrentPage)" />
+            }
+        </section>
+
+        <aside class="reader-sidebar">
+            <div class="sidebar-section">
+                <h2 class="sidebar-title">Read aloud</h2>
+
+                @if (!SpeechSupported)
+                {
+                    <p class="text-danger small">This browser does not support the Web Speech API.</p>
+                }
+                else
+                {
+                    <div class="d-grid gap-2 mb-2">
+                        @if (ReadAloud.Status is ReadAloudStatus.Speaking)
+                        {
+                            <button class="btn btn-warning" @onclick="PauseReading">
+                                Pause
+                            </button>
+                        }
+                        else if (ReadAloud.Status is ReadAloudStatus.Paused)
+                        {
+                            <button class="btn btn-success" @onclick="ResumeReading">
+                                Resume
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="btn btn-success" @onclick="StartReading" disabled="@(!CanRead)">
+                                Start reading
+                            </button>
+                        }
+
+                        <div class="btn-group">
+                            <button class="btn btn-outline-secondary" @onclick="PreviousChunk" disabled="@(!ReadAloud.IsReady)" title="Previous passage">
+                                &#9198;
+                            </button>
+                            <button class="btn btn-outline-secondary" @onclick="NextChunk" disabled="@(!ReadAloud.IsReady)" title="Next passage">
+                                &#9197;
+                            </button>
+                            <button class="btn btn-outline-secondary" @onclick="RestartReading" disabled="@(!CanRead)" title="Restart from the beginning">
+                                &#8634;
+                            </button>
+                            <button class="btn btn-outline-secondary" @onclick="StopReading" disabled="@(!ReadAloud.IsActive)" title="Stop">
+                                &#9632;
+                            </button>
+                        </div>
+
+                        <button class="btn btn-outline-secondary" @onclick="ReadSelection" title="Read the text selected in the PDF">
+                            &ldquo; Read selection
+                        </button>
+                    </div>
+
+                    @if (ReadAloud.IsReady)
+                    {
+                        <div class="progress mb-1" style="height: 6px;" role="progressbar"
+                             aria-valuenow="@ReadAloud.Progress" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar" style="@($"width:{ReadAloud.Progress:0.0}%")"></div>
+                        </div>
+                        <div class="small text-muted mb-2">
+                            Passage @(Math.Min(ReadAloud.CurrentIndex + 1, ReadAloud.TotalChunks)) of @ReadAloud.TotalChunks
+                            @if (ReadAloud.CurrentChunk is { } chunk)
+                            {
+                                <span> &middot; page @chunk.PageNumber</span>
+                            }
+                        </div>
+                    }
+                }
+
+                @if (ReadAloud.Status == ReadAloudStatus.Error && !string.IsNullOrEmpty(ReadAloud.ErrorMessage))
+                {
+                    <p class="text-danger small">@ReadAloud.ErrorMessage</p>
+                }
+            </div>
+
+            <div class="sidebar-section">
+                <h2 class="sidebar-title">Voice</h2>
+                <div class="mb-2">
+                    <label class="form-label small mb-1" for="voice-select">Voice</label>
+                    <select id="voice-select" class="form-select form-select-sm" @bind="SelectedVoiceName" @bind:after="OnVoiceChanged">
+                        <option value="">Browser default</option>
+                        @foreach (var voice in Voices)
+                        {
+                            <option value="@voice.Name">@voice.DisplayName</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label small mb-1" for="rate-range">Speed: @($"{ReadAloud.Options.Rate:0.0}x")</label>
+                    <input id="rate-range" type="range" class="form-range" min="0.5" max="2.5" step="0.1"
+                           value="@ReadAloud.Options.Rate" @oninput="OnRateChanged" />
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label small mb-1" for="pitch-range">Pitch: @($"{ReadAloud.Options.Pitch:0.0}")</label>
+                    <input id="pitch-range" type="range" class="form-range" min="0.5" max="1.5" step="0.1"
+                           value="@ReadAloud.Options.Pitch" @oninput="OnPitchChanged" />
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label small mb-1" for="volume-range">Volume: @($"{ReadAloud.Options.Volume:0.0}")</label>
+                    <input id="volume-range" type="range" class="form-range" min="0" max="1" step="0.05"
+                           value="@ReadAloud.Options.Volume" @oninput="OnVolumeChanged" />
+                </div>
+
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="follow-toggle" checked="@FollowAloud" @onchange="OnFollowChanged" />
+                    <label class="form-check-label small" for="follow-toggle">Follow along while reading</label>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h2 class="sidebar-title">Document</h2>
+                @if (DocumentLoaded)
+                {
+                    <dl class="doc-info mb-0">
+                        <dt>File</dt>
+                        <dd class="text-break">@DocumentName</dd>
+                        <dt>Pages</dt>
+                        <dd>@PageCount</dd>
+                        <dt>Size</dt>
+                        <dd>@FormatSize(DocumentSize)</dd>
+                    </dl>
+                }
+                else
+                {
+                    <p class="text-muted small mb-0">No document open.</p>
+                }
+            </div>
+
+            <div class="sidebar-section">
+                <h2 class="sidebar-title">Save audio</h2>
+                @if (!AudioSupported)
+                {
+                    <p class="text-danger small">This browser cannot build audio files.</p>
+                }
+                else if (!DocumentLoaded)
+                {
+                    <p class="text-muted small mb-0">Open a PDF to save its spoken audio.</p>
+                }
+                else
+                {
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label small mb-1" for="export-format">Format</label>
+                            <select id="export-format" class="form-select form-select-sm" @bind="ExportFormat">
+                                <option value="@AudioFormat.Mp3">MP3 (smaller)</option>
+                                <option value="@AudioFormat.Wav">WAV (lossless)</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small mb-1" for="export-scope">Content</label>
+                            <select id="export-scope" class="form-select form-select-sm" @bind="ExportScope">
+                                <option value="@AudioExportScope.Document">Whole document</option>
+                                <option value="@AudioExportScope.CurrentPage">Current page</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="export-voice">Voice</label>
+                        <select id="export-voice" class="form-select form-select-sm" @bind="ExportVoice">
+                            @foreach (var voice in ExportVoices)
+                            {
+                                <option value="@voice">@DescribeExportVoice(voice)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="export-rate">Speed: @($"{ExportRate:0.0}x")</label>
+                        <input id="export-rate" type="range" class="form-range" min="0.5" max="2.5" step="0.1"
+                               value="@ExportRate" @oninput="OnExportRateChanged" />
+                    </div>
+
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label small mb-1" for="export-gap">Gap: @($"{ExportGapMs} ms")</label>
+                            <input id="export-gap" type="range" class="form-range" min="0" max="1000" step="50"
+                                   value="@ExportGapMs" @oninput="OnExportGapChanged" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small mb-1" for="export-bitrate">Bitrate</label>
+                            <select id="export-bitrate" class="form-select form-select-sm" @bind="ExportBitrate"
+                                    disabled="@(ExportFormat != AudioFormat.Mp3)">
+                                <option value="96">96 kbps</option>
+                                <option value="128">128 kbps</option>
+                                <option value="192">192 kbps</option>
+                                <option value="256">256 kbps</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="export-download" checked="@ExportDownloadAutomatically" @onchange="OnExportDownloadChanged" />
+                        <label class="form-check-label small" for="export-download">Download when finished</label>
+                    </div>
+
+                    @if (IsExporting)
+                    {
+                        <div class="progress mb-1" style="height: 6px;" role="progressbar"
+                             aria-valuenow="@ExportProgress.Percent" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar" style="@($"width:{ExportProgress.Percent:0.0}%")"></div>
+                        </div>
+                        <p class="small text-muted mb-2">
+                            @ExportStageLabel
+                            @if (!string.IsNullOrEmpty(ExportProgress.Message))
+                            {
+                                <span class="text-truncate d-block">@ExportProgress.Message</span>
+                            }
+                        </p>
+                        <button class="btn btn-outline-danger w-100" @onclick="CancelExport">Cancel export</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-primary w-100" @onclick="StartExport" disabled="@(!CanExport)">
+                            Save as @ExportFormat.ToString().ToUpperInvariant()
+                        </button>
+                    }
+
+                    @if (LastExport is not null)
+                    {
+                        <div class="card card-body p-2 mt-2">
+                            <div class="small text-muted mb-2">
+                                @LastExport.FileName &middot; @FormatSize(LastExport.Bytes)
+                                &middot; about @FormatDuration(LastExport.Seconds)
+                            </div>
+                            <div class="d-flex gap-1">
+                                <button class="btn btn-sm btn-outline-secondary flex-fill" @onclick="DownloadLastExport">Download</button>
+                                @if (!string.IsNullOrEmpty(LastExport.Url))
+                                {
+                                    <a class="btn btn-sm btn-outline-secondary flex-fill" href="@LastExport.Url" download="@LastExport.FileName">Open</a>
+                                }
+                            </div>
+                            <audio class="mt-2 w-100" controls preload="none" src="@LastExport.Url"></audio>
+                        </div>
+                    }
+                }
+            </div>
+
+            @if (DocumentLoaded)
+            {
+                <div class="sidebar-section">
+                    <h2 class="sidebar-title">Text preview</h2>
+                    <p class="text-muted small">Page @CurrentPage text as it will be read aloud.</p>
+                    <textarea class="form-control form-control-sm reader-text-preview" readonly rows="8"
+                              value="@CurrentPageText"></textarea>
+                </div>
+            }
+        </aside>
+    </div>
+</div>
+
+@code {
+    private const double MinZoom = 0.25;
+    private const double MaxZoom = 4.0;
+    private const double ZoomStep = 0.15;
+
+    private ReadAloudController readAloudController = null!;
+    private readonly List<PageEntry> pages = new();
+
+    private ElementReference viewportRef;
+    private IJSObjectReference? clipboardModule;
+
+    private string? documentHostToken;
+    private string? visibilityToken;
+
+    private bool isLoading;
+    private bool isDisposed;
+    private bool needsVisibilityRefresh;
+
+    private string DocumentId { get; set; } = string.Empty;
+
+    private string DocumentName { get; set; } = string.Empty;
+
+    private long DocumentSize { get; set; }
+
+    private bool DocumentLoaded { get; set; }
+
+    private bool IsLoading
+    {
+        get => isLoading;
+        set => isLoading = value;
+    }
+
+    private int PageCount { get; set; }
+
+    private int CurrentPage { get; set; } = 1;
+
+    private double Zoom { get; set; } = 1.0;
+
+    private double RotationDegrees { get; set; }
+
+    private bool IsContinuous { get; set; } = true;
+
+    private bool FollowAloud { get; set; } = true;
+
+    private bool SpeechSupported { get; set; } = true;
+
+    private string? SelectedVoiceName { get; set; }
+
+    private List<SpeechVoice> Voices { get; } = new();
+
+    private string StatusMessage { get; set; } = string.Empty;
+
+    private string StatusAlertClass { get; set; } = "info";
+
+    private string? CurrentPageText { get; set; }
+
+    private bool AudioSupported { get; set; } = true;
+
+    private AudioFormat ExportFormat { get; set; } = AudioFormat.Mp3;
+
+    private AudioExportScope ExportScope { get; set; } = AudioExportScope.Document;
+
+    private string ExportVoice { get; set; } = "en-us";
+
+    private double ExportRate { get; set; } = 1.0;
+
+    private int ExportGapMs { get; set; } = 250;
+
+    private int ExportBitrate { get; set; } = 128;
+
+    private bool ExportDownloadAutomatically { get; set; } = true;
+
+    private bool IsExporting { get; set; }
+
+    private AudioExportProgress ExportProgress { get; } = new();
+
+    private AudioExportResult? LastExport { get; set; }
+
+    private readonly List<string> exportVoices = ["en-us", "en", "de", "es", "fr"];
+
+    private IReadOnlyList<string> ExportVoices => exportVoices;
+
+    private bool CanExport => DocumentLoaded && ReadAloud.IsReady && !IsExporting;
+
+    private string ExportStageLabel => ExportProgress.Stage switch
+    {
+        "loading" => "Starting engine\u2026",
+        "synthesizing" => $"Synthesising passage {Math.Max(1, ExportProgress.Current)} of {ExportProgress.Total}\u2026",
+        "encoding" => "Writing the audio file\u2026",
+        _ => "Working\u2026",
+    };
+
+    private ReadAloudController ReadAloud => readAloudController;
+
+    private IReadOnlyList<PageEntry> Pages => pages;
+
+    private bool CanGoPrevious => DocumentLoaded && CurrentPage > 1;
+
+    private bool CanGoNext => DocumentLoaded && CurrentPage < PageCount;
+
+    private bool CanZoomOut => Zoom > MinZoom + 0.001;
+
+    private bool CanZoomIn => Zoom < MaxZoom - 0.001;
+
+    private bool CanRead => DocumentLoaded && ReadAloud.IsReady;
+
+    protected override async Task OnInitializedAsync()
+    {
+        readAloudController = new ReadAloudController(Pdf, Speech);
+        readAloudController.Changed += OnReadAloudChanged;
+        Audio.ProgressChanged += OnExportProgress;
+        await Task.CompletedTask;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await Speech.InitializeAsync();
+            SpeechSupported = Speech.IsSupported;
+            await LoadVoicesAsync();
+
+            documentHostToken = await Pdf.AttachHostAsync(this);
+            await RefreshVisibilityObserverAsync();
+
+            AudioSupported = true;
+            try
+            {
+                await Audio.InitializeAsync();
+                AudioSupported = Audio.IsSupported;
+            }
+            catch (JSException)
+            {
+                AudioSupported = false;
+            }
+        }
+
+        if (needsVisibilityRefresh)
+        {
+            needsVisibilityRefresh = false;
+            await RefreshVisibilityObserverAsync();
+        }
+    }
+
+    private async Task LoadVoicesAsync()
+    {
+        Voices.Clear();
+        Voices.AddRange(await Speech.GetVoicesAsync());
+    }
+
+    private async Task RefreshVisibilityObserverAsync()
+    {
+        if (!DocumentLoaded || string.IsNullOrEmpty(DocumentId))
+        {
+            return;
+        }
+
+        visibilityToken = await Pdf.ObservePagesAsync(viewportRef, this);
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs args)
+    {
+        var file = args.File;
+        if (file is null)
+        {
+            return;
+        }
+
+        try
+        {
+            IsLoading = true;
+            StatusMessage = string.Empty;
+            StateHasChanged();
+
+            await readAloudController.StopAsync();
+
+            if (DocumentLoaded && !string.IsNullOrEmpty(DocumentId))
+            {
+                await Pdf.ReleaseDocumentAsync(DocumentId);
+            }
+
+            pages.Clear();
+            CurrentPage = 1;
+            CurrentPageText = null;
+            RotationDegrees = 0;
+
+            using var stream = file.OpenReadStream(maxAllowedSize: 150 * 1024 * 1024);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+            var bytes = buffer.ToArray();
+
+            DocumentId = Guid.NewGuid().ToString("N");
+            DocumentName = file.Name;
+            DocumentSize = bytes.LongLength;
+
+            PageCount = await Pdf.OpenDocumentAsync(DocumentId, bytes);
+            DocumentLoaded = true;
+
+            var sizes = await Pdf.GetAllPageSizesAsync(DocumentId);
+            for (var index = 0; index < sizes.Length; index++)
+            {
+                pages.Add(new PageEntry(index + 1, sizes[index], index < 3));
+            }
+
+            await readAloudController.PrepareAsync(DocumentId, PageCount);
+            readAloudController.SetHost(this);
+            await RefreshCurrentPageTextAsync();
+
+            if (!ReadAloud.IsReady)
+            {
+                StatusMessage = ReadAloud.ErrorMessage ?? "The document contains no extractable text.";
+                StatusAlertClass = "warning";
+            }
+            else
+            {
+                StatusMessage = $"Loaded {PageCount} page(s). Ready to read aloud.";
+                StatusAlertClass = "success";
+            }
+
+            await RefreshVisibilityObserverAsync();
+            needsVisibilityRefresh = true;
+        }
+        catch (JSException ex) when (ex.Message.Contains("PasswordException", StringComparison.Ordinal))
+        {
+            DocumentLoaded = false;
+            StatusMessage = "This PDF is password protected and cannot be opened.";
+            StatusAlertClass = "danger";
+        }
+        catch (Exception ex)
+        {
+            DocumentLoaded = false;
+            StatusMessage = $"Could not open the PDF: {ex.Message}";
+            StatusAlertClass = "danger";
+        }
+        finally
+        {
+            IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CloseDocument()
+    {
+        await readAloudController.StopAsync();
+
+        if (!string.IsNullOrEmpty(DocumentId))
+        {
+            await Pdf.ReleaseDocumentAsync(DocumentId);
+        }
+
+        pages.Clear();
+        DocumentLoaded = false;
+        DocumentId = string.Empty;
+        DocumentName = string.Empty;
+        DocumentSize = 0;
+        PageCount = 0;
+        CurrentPage = 1;
+        CurrentPageText = null;
+        StatusMessage = string.Empty;
+    }
+
+    private async Task PreviousPage() => await GoToPageAsync(CurrentPage - 1);
+
+    private async Task NextPage() => await GoToPageAsync(CurrentPage + 1);
+
+    private async Task GoToPageAsync(int pageNumber)
+    {
+        if (!DocumentLoaded)
+        {
+            return;
+        }
+
+        CurrentPage = Math.Clamp(pageNumber, 1, PageCount);
+        await RefreshCurrentPageTextAsync();
+
+        if (IsContinuous)
+        {
+            await Pdf.ScrollToPageAsync(viewportRef, CurrentPage);
+        }
+    }
+
+    private async Task OnPageNumberChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var page))
+        {
+            await GoToPageAsync(page);
+        }
+    }
+
+    private void ZoomIn() => Zoom = Math.Min(MaxZoom, Math.Round(Zoom + ZoomStep, 2));
+
+    private void ZoomOut() => Zoom = Math.Max(MinZoom, Math.Round(Zoom - ZoomStep, 2));
+
+    private void ResetZoom() => Zoom = 1.0;
+
+    private void Rotate() => RotationDegrees = (RotationDegrees + 90) % 360;
+
+    private async Task OnContinuousChanged(ChangeEventArgs args)
+    {
+        IsContinuous = args.Value is true && args.Value.ToString() == "true";
+        await RefreshCurrentPageTextAsync();
+        needsVisibilityRefresh = IsContinuous;
+        StateHasChanged();
+    }
+
+    private void OnFollowChanged(ChangeEventArgs args)
+        => FollowAloud = args.Value is true;
+
+    private void OnVoiceChanged()
+        => ReadAloud.Options.VoiceName = string.IsNullOrEmpty(SelectedVoiceName) ? null : SelectedVoiceName;
+
+    private void OnRateChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var rate))
+        {
+            ReadAloud.Options.Rate = Math.Clamp(rate, 0.5, 2.5);
+        }
+    }
+
+    private void OnPitchChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var pitch))
+        {
+            ReadAloud.Options.Pitch = Math.Clamp(pitch, 0.5, 1.5);
+        }
+    }
+
+    private void OnVolumeChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var volume))
+        {
+            ReadAloud.Options.Volume = Math.Clamp(volume, 0, 1);
+        }
+    }
+
+    private async Task StartReading()
+    {
+        readAloudController.SetHost(this);
+        readAloudController.Options.VoiceName = string.IsNullOrEmpty(SelectedVoiceName) ? null : SelectedVoiceName;
+        await readAloudController.StartAsync();
+    }
+
+    private async Task PauseReading() => await readAloudController.PauseAsync();
+
+    private async Task ResumeReading() => await readAloudController.ResumeAsync();
+
+    private async Task StopReading() => await readAloudController.StopAsync();
+
+    private async Task RestartReading() => await readAloudController.RestartAsync();
+
+    private async Task NextChunk() => await readAloudController.NextAsync();
+
+    private async Task PreviousChunk() => await readAloudController.PreviousAsync();
+
+    private async Task ReadSelection()
+    {
+        try
+        {
+            clipboardModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/clipboard.js");
+            var text = await clipboardModule.InvokeAsync<string>("getPdfSelection");
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                StatusMessage = "Select some text in the document first.";
+                StatusAlertClass = "info";
+                return;
+            }
+
+            readAloudController.Options.VoiceName = string.IsNullOrEmpty(SelectedVoiceName) ? null : SelectedVoiceName;
+            await readAloudController.ReadTextAsync(text);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not read the selection: {ex.Message}";
+            StatusAlertClass = "danger";
+        }
+    }
+
+    private static string DescribeExportVoice(string voice) => voice switch
+    {
+        "en" => "English",
+        "en-us" => "English (US)",
+        "de" => "German",
+        "es" => "Spanish",
+        "fr" => "French",
+        _ => voice,
+    };
+
+    private void OnExportRateChanged(ChangeEventArgs args)
+    {
+        if (double.TryParse(args.Value?.ToString(), out var rate))
+        {
+            ExportRate = Math.Clamp(rate, 0.5, 2.5);
+        }
+    }
+
+    private void OnExportGapChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var gap))
+        {
+            ExportGapMs = Math.Clamp(gap, 0, 1000);
+        }
+    }
+
+    private void OnExportDownloadChanged(ChangeEventArgs args)
+        => ExportDownloadAutomatically = args.Value is true;
+
+    private async Task StartExport()
+    {
+        if (!CanExport)
+        {
+            return;
+        }
+
+        // Stop playback first so the Web Speech engine and the export share no state.
+        await readAloudController.StopAsync();
+
+        IsExporting = true;
+        ExportProgress.Stage = "loading";
+        ExportProgress.Current = 0;
+        ExportProgress.Total = ReadAloud.TotalChunks;
+        ExportProgress.Message = string.Empty;
+        StatusMessage = string.Empty;
+
+        if (LastExport is not null)
+        {
+            await Audio.ReleaseAsync(LastExport.Url);
+            LastExport = null;
+        }
+
+        try
+        {
+            var passages = GetPassagesToExport();
+            if (passages.Count == 0)
+            {
+                StatusMessage = "There is no text to export for the current selection.";
+                StatusAlertClass = "warning";
+                return;
+            }
+
+            var extension = ExportFormat == AudioFormat.Wav ? "wav" : "mp3";
+            var baseName = string.IsNullOrWhiteSpace(DocumentName)
+                ? "reading"
+                : Path.GetFileNameWithoutExtension(DocumentName);
+            var fileName = $"{baseName}.{extension}";
+
+            var options = new AudioExportOptions
+            {
+                Format = ExportFormat,
+                Voice = ExportVoice,
+                Rate = ExportRate,
+                Pitch = 1.0,
+                Volume = 1.0,
+                Bitrate = ExportBitrate,
+                GapMs = ExportGapMs,
+                FileName = fileName,
+            };
+
+            var result = await Audio.ExportAsync(passages, options);
+            result.FileName = fileName;
+            LastExport = result;
+
+            StatusMessage = $"Saved {fileName} ({FormatSize(result.Bytes)}, about {FormatDuration(result.Seconds)}).";
+            StatusAlertClass = "success";
+
+            if (ExportDownloadAutomatically)
+            {
+                await Audio.DownloadAsync(result.Url, result.FileName);
+            }
+        }
+        catch (Exception ex)
+        {
+            var message = ex.Message;
+            if (message.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusMessage = "Export cancelled.";
+                StatusAlertClass = "info";
+            }
+            else
+            {
+                StatusMessage = $"Could not save audio: {message}";
+                StatusAlertClass = "danger";
+            }
+        }
+        finally
+        {
+            IsExporting = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Passages covered by the current export scope, falling back to the whole document.</summary>
+    private List<string> GetPassagesToExport()
+    {
+        var chunks = ReadAloud.Chunks;
+
+        if (ExportScope == AudioExportScope.CurrentPage)
+        {
+            var pageChunks = chunks.Where(c => c.PageNumber == CurrentPage).ToList();
+            if (pageChunks.Count > 0)
+            {
+                return pageChunks.Select(c => c.Text).ToList();
+            }
+        }
+
+        return chunks.Select(c => c.Text).ToList();
+    }
+
+    private async Task CancelExport()
+    {
+        await Audio.CancelAsync();
+    }
+
+    private async Task DownloadLastExport()
+    {
+        if (LastExport is not null)
+        {
+            await Audio.DownloadAsync(LastExport.Url, LastExport.FileName);
+        }
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        var duration = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours}h {duration.Minutes}m"
+            : duration.TotalMinutes >= 1
+                ? $"{(int)duration.TotalMinutes}m {duration.Seconds}s"
+                : $"{Math.Max(1, duration.Seconds)}s";
+    }
+
+    private Task OnExportProgress(AudioExportProgress progress)
+    {
+        return InvokeAsync(() =>
+        {
+            if (isDisposed)
+            {
+                return;
+            }
+
+            ExportProgress.Stage = progress.Stage;
+            ExportProgress.Current = progress.Current;
+            ExportProgress.Total = progress.Total;
+            ExportProgress.Message = progress.Message;
+            StateHasChanged();
+        });
+    }
+
+    private async Task RefreshCurrentPageTextAsync()
+    {
+        if (!DocumentLoaded || string.IsNullOrEmpty(DocumentId))
+        {
+            CurrentPageText = null;
+            return;
+        }
+
+        var pageText = await Pdf.GetPageTextAsync(DocumentId, CurrentPage);
+        CurrentPageText = pageText?.Text ?? string.Empty;
+    }
+
+    private Task OnReadAloudChanged()
+    {
+        return InvokeAsync(() =>
+        {
+            if (isDisposed)
+            {
+                return;
+            }
+
+            if (FollowAloud && ReadAloud.CurrentChunk is { } chunk && chunk.PageNumber != CurrentPage)
+            {
+                CurrentPage = chunk.PageNumber;
+                _ = RefreshCurrentPageTextAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private IReadOnlyList<PageTextSpanRange>? GetSpanOffsets(int pageNumber)
+        => readAloudController.GetSpanOffsetsForPage(pageNumber);
+
+    private PageHighlight? GetHighlight(int pageNumber)
+    {
+        if (ReadAloud.Status is not (ReadAloudStatus.Speaking or ReadAloudStatus.Paused))
+        {
+            return null;
+        }
+
+        if (ReadAloud.CurrentChunk is not { } chunk || chunk.PageNumber != pageNumber)
+        {
+            return null;
+        }
+
+        return new PageHighlight(pageNumber, chunk.Start, chunk.Length);
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB"];
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return $"{value:0.#} {units[unit]}";
+    }
+
+    // IPdfDocumentHost: a span in the text layer was clicked, so start reading from there.
+    [JSInvokable]
+    public async Task OnTextSpanClickAsync(int pageNumber, int spanNumber)
+    {
+        await InvokeAsync(async () =>
+        {
+            if (spanNumber < 0 || !ReadAloud.IsReady)
+            {
+                return;
+            }
+
+            await readAloudController.StartReadingAtSpanAsync(pageNumber, spanNumber);
+
+            if (ReadAloud.Status is not (ReadAloudStatus.Speaking or ReadAloudStatus.Paused))
+            {
+                StatusMessage = "Could not locate that passage in the extracted text.";
+                StatusAlertClass = "info";
+            }
+        });
+    }
+
+    // IPdfPageVisibilityHost
+    public Task OnPageVisibleAsync(int pageNumber)
+    {
+        var index = pageNumber - 1;
+        if (index < 0 || index >= pages.Count)
+        {
+            return Task.CompletedTask;
+        }
+
+        var entry = pages[index];
+        if (pageNumber == CurrentPage && !entry.ShouldRender)
+        {
+            entry.ShouldRender = true;
+            needsVisibilityRefresh = true;
+            StateHasChanged();
+            return Task.CompletedTask;
+        }
+
+        if (entry.ShouldRender)
+        {
+            return Task.CompletedTask;
+        }
+
+        entry.ShouldRender = true;
+        needsVisibilityRefresh = true;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    // IReadAloudHost
+    public async Task EnsurePageVisibleAsync(int pageNumber, CancellationToken cancellationToken)
+    {
+        await InvokeAsync(async () =>
+        {
+            if (CurrentPage != pageNumber)
+            {
+                CurrentPage = pageNumber;
+                await RefreshCurrentPageTextAsync();
+            }
+
+            var index = pageNumber - 1;
+            if (index >= 0 && index < pages.Count)
+            {
+                pages[index].ShouldRender = true;
+            }
+
+            needsVisibilityRefresh = true;
+            StateHasChanged();
+
+            if (IsContinuous)
+            {
+                await Pdf.ScrollToPageAsync(viewportRef, pageNumber);
+            }
+        });
+    }
+
+    public Task HighlightAsync(int pageNumber, int start, int length)
+        => Task.CompletedTask;
+
+    public Task ClearHighlightAsync(int pageNumber)
+        => Task.CompletedTask;
+
+    public Task ApplySpanOffsetsAsync(int pageNumber, IReadOnlyList<PageTextSpanRange> ranges)
+        => Task.CompletedTask;
+
+    public Task ScrollSpanIntoViewAsync(int pageNumber, int spanNumber)
+        => Task.CompletedTask;
+
+    public void Dispose()
+    {
+        readAloudController.Changed -= OnReadAloudChanged;
+        Audio.ProgressChanged -= OnExportProgress;
+        readAloudController.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        isDisposed = true;
+
+        if (LastExport is not null)
+        {
+            await Audio.ReleaseAsync(LastExport.Url);
+            LastExport = null;
+        }
+
+        if (!string.IsNullOrEmpty(DocumentId))
+        {
+            await Pdf.ReleaseDocumentAsync(DocumentId);
+        }
+
+        if (documentHostToken is not null)
+        {
+            await Pdf.DetachHostAsync(documentHostToken);
+            documentHostToken = null;
+        }
+
+        if (visibilityToken is not null)
+        {
+            await Pdf.UnobservePagesAsync(visibilityToken);
+            visibilityToken = null;
+        }
+
+        if (clipboardModule is not null)
+        {
+            await clipboardModule.DisposeAsync();
+            clipboardModule = null;
+        }
+    }
+
+    private sealed class PageEntry
+    {
+        public PageEntry(int pageNumber, PdfPageSize size, bool shouldRender)
+        {
+            PageNumber = pageNumber;
+            Size = size;
+            ShouldRender = shouldRender;
+        }
+
+        public int PageNumber { get; }
+
+        public PdfPageSize Size { get; }
+
+        public bool ShouldRender { get; set; }
+    }
+}

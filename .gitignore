@@ -1,0 +1,30 @@
+## Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Visual Studio / Rider
+.vs/
+.idea/
+*.swp
+*~
+
+## Test and coverage output
+[Tt]est[Rr]esult*/
+coverage/
+*.coverage
+*.trx
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+## Tooling
+.agent_tmp/

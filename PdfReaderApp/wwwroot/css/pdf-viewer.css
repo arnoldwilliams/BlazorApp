@@ -1,0 +1,57 @@
+/* Custom page wrappers above the text layer. */
+.pdf-page {
+    position: relative;
+    margin: 0 auto 1rem;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    /* Keep the page from flying offscreen when it is rotated in the continuous view. */
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+}
+.pdf-page-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.55);
+}
+
+/* Text layer shared by every page. */
+.textLayer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    line-height: 1;
+    text-size-adjust: none;
+    forced-color-adjust: none;
+    transform-origin: 0 0;
+    z-index: 1;
+    caret-color: CanvasText;
+    --min-font-size: 1;
+}
+.textLayer :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+}
+.textLayer span {
+    font-size: var(--font-height, 1em);
+    line-height: 1;
+}
+.textLayer span.markedContent {
+    top: 0;
+    height: 0;
+}
+.textLayer ::selection {
+    background: rgba(0, 100, 255, 0.35);
+}
+/* Highlight applied to the passage that is currently being spoken. */
+.textLayer span.pdf-speak-highlight {
+    background: rgba(255, 214, 0, 0.45);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(255, 170, 0, 0.65);
+}
