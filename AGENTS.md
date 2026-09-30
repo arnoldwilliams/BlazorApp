@@ -86,6 +86,28 @@ the page is rotated.
 - `renderOcrTextLayer` takes the caller's `scale`. Hardcoding `1` leaves the layer
   laid out for an unzoomed page and the spans drift as soon as the page is zoomed.
 
+## Line breaks and the pause between passages
+
+Each passage is a separate `SpeechSynthesisUtterance`, and the browser inserts a
+noticeable pause at the end of every one. A line break is therefore not a pause
+in its own right: if a line break ends an utterance, a sentence that merely
+wrapped at the edge of the page is read as though it ended in a full stop.
+
+Two things keep that from happening, and they have to agree:
+
+- `buildPageModel` and `buildOcrPageModel` insert a `\n` between lines only when
+  the line actually ended a sentence (`textSeparator` in `pdfInterop.js`). A
+  wrap inside a sentence is joined with a space instead.
+- `TextChunker` does not treat `\n` as a split point. Its terminators are real
+  punctuation only.
+
+Changing either one alone is not enough. Dropping the chunker rule leaves the
+newlines splitting passages; dropping the separator rule leaves the chunker
+splitting on the newlines it is still being handed.
+
+The chunker never rewrites text, it only chooses split points, so a `\n` that
+reaches it is spoken as a break regardless of what it meant on the page.
+
 ## Gotchas
 
 - A Blazor method invoked from JS via `invokeMethodAsync` must carry

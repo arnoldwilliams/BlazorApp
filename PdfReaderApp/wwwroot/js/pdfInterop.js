@@ -291,6 +291,23 @@ async function getPageSize(documentId, pageNumber) {
     return { width: viewport.width, height: viewport.height };
 }
 
+// Chooses the separator to put before the next run of text.
+// pdf.js reports a line ending at every visual line wrap, and a wrap in the middle of a
+// sentence is not a pause. A line break is therefore only kept when the line it follows
+// actually finished a sentence; anything else is joined with a space. This is what stops
+// the reader taking a breath at the end of every line of a wrapped paragraph.
+function textSeparator(text, hasEol) {
+    if (text.length === 0) {
+        return '';
+    }
+
+    if (!hasEol) {
+        return ' ';
+    }
+
+    return /[.!?;:]["')\]]?\s*$/.test(text) ? '\n' : ' ';
+}
+
 // Builds a single ordered model of a page: the full text plus per item offsets.
 // pdf.js hands back text items in content order, so concatenating them with a
 // separator yields a string whose offsets are stable for both speech and highlighting.
@@ -304,12 +321,7 @@ function buildPageModel(items) {
             continue;
         }
 
-        const separated = text.length === 0
-            ? ''
-            : (item.hasEOL ? '\n' : ' ');
-        if (separated) {
-            text += separated;
-        }
+        text += textSeparator(text, item.hasEOL);
 
         const start = text.length;
         text += item.str;
@@ -533,8 +545,15 @@ function buildOcrPageModel(words, viewport) {
     for (const line of lines) {
         line.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
 
+        // A line only gets a break before it when the previous line ended a sentence. A
+        // line that merely ran out of width continues with a space, so the reader does not
+        // take a breath at every visual line the way the printed page happens to wrap.
+        if (text.length > 0) {
+            text += textSeparator(text, true);
+        }
+
         for (const word of line.words) {
-            if (text.length > 0) {
+            if (text.length > 0 && !text.endsWith(' ') && !text.endsWith('\n')) {
                 text += ' ';
             }
 
@@ -547,9 +566,6 @@ function buildOcrPageModel(words, viewport) {
                 bbox: word.bbox,
             });
         }
-
-        // A newline between lines keeps the chunker's sentence detection sane.
-        text += '\n';
     }
 
     text = text.replace(/\s+$/, '');

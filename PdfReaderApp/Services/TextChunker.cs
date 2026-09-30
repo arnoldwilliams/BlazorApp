@@ -8,7 +8,11 @@ public static class TextChunker
 {
     private const int DefaultMaxLength = 220;
 
-    private static readonly char[] SentenceTerminators = ['.', '!', '?', ';', ':', '\n', '\r', '\u2022', '\u2023', '\u25CF'];
+    // A line break is deliberately not a split point. The browser inserts a noticeable
+    // pause at the end of every utterance, so splitting on line breaks makes the reader
+    // pause as though each wrapped line ended in a full stop. Splitting only on real
+    // punctuation keeps a wrapped sentence in one utterance.
+    private static readonly char[] SentenceTerminators = ['.', '!', '?', ';', ':', '\u2022', '\u2023', '\u25CF'];
 
     public static IEnumerable<string> Split(string text, int maxLength = DefaultMaxLength)
     {
