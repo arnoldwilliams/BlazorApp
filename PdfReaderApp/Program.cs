@@ -11,6 +11,7 @@ builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.
 builder.Services.AddScoped<PdfInterop>();
 builder.Services.AddScoped<SpeechInterop>();
 builder.Services.AddScoped<AudioExportService>();
+builder.Services.AddScoped<NarrationServerClient>();
 builder.Services.AddScoped<OcrService>();
 
 await builder.Build().RunAsync();

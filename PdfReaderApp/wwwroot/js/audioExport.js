@@ -10,6 +10,10 @@ const LAME_SCRIPT = './lib/lamejs/lame.min.js';
 const SAMPLE_RATE = 22050;
 const SYNTH_TIMEOUT_MS = 30000;
 
+// piper's own inter-sentence pause. The reader's gap setting is applied separately, when
+// the passages are joined, so the slider keeps meaning the same thing on both engines.
+const SERVER_SENTENCE_SILENCE_MS = 200;
+
 // Paths are resolved by meSpeak relative to the directory its own script lives in.
 const VOICE_PATHS = {
     'en': 'voices/en/en.json',
@@ -94,7 +98,7 @@ function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
 }
 
-function synthesize(text, options) {
+function synthesizeOffline(text, options) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Synthesis timed out.')), SYNTH_TIMEOUT_MS);
         window.meSpeak.speak(text, toEngineOptions(options), (success, id, stream) => {
@@ -107,6 +111,91 @@ function synthesize(text, options) {
             resolve(new Uint8Array(stream));
         });
     });
+}
+
+// The server engine returns a finished WAV per passage, so there is nothing to encode
+// here beyond what the caller already does for the offline engine.
+async function synthesizeServer(text, options) {
+    const base = (options.serverUrl || '').replace(/\/+$/, '');
+    if (!base) {
+        throw new Error('No narration server is configured.');
+    }
+
+    let response;
+    try {
+        response = await fetch(`${base}/api/speech`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                voice: options.voice,
+                rate: clamp(options.speed ?? 1, 0.5, 2.5),
+                // piper pauses after each sentence for prosody; that is separate from the
+                // reader's gap slider, which spaces whole passages apart in the assembly loop.
+                sentenceSilenceMs: SERVER_SENTENCE_SILENCE_MS,
+            }),
+        });
+    } catch {
+        throw new Error('The narration server could not be reached.');
+    }
+
+    if (!response.ok) {
+        let detail = '';
+        try {
+            const problem = await response.json();
+            detail = problem && (problem.detail || problem.title) ? ` ${problem.detail || problem.title}` : '';
+        } catch {
+            // The error body was not JSON; the status alone will have to do.
+        }
+
+        throw new Error(`The narration server returned ${response.status}.${detail}`);
+    }
+
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+/// Reports whether a narration server is reachable and what it offers.
+export async function probeServer(baseUrl) {
+    const base = (baseUrl || '').replace(/\/+$/, '');
+    if (!base) {
+        return { available: false, reason: 'No narration server is configured.' };
+    }
+
+    try {
+        const response = await fetch(`${base}/api/health`);
+        if (!response.ok) {
+            return { available: false, reason: `The narration server returned ${response.status}.` };
+        }
+
+        const health = await response.json();
+        if (!health.installed) {
+            return { available: false, reason: 'The narration engine is not installed on the server.' };
+        }
+
+        if (!health.voices) {
+            return { available: false, reason: 'The narration server has no voices installed.' };
+        }
+
+        return { available: true, reason: '', voices: health.voices };
+    } catch {
+        return { available: false, reason: 'The narration server could not be reached.' };
+    }
+}
+
+/// The voices the narration server can synthesise with.
+export async function listServerVoices(baseUrl) {
+    const base = (baseUrl || '').replace(/\/+$/, '');
+    if (!base) {
+        return [];
+    }
+
+    const response = await fetch(`${base}/api/voices`);
+    if (!response.ok) {
+        throw new Error(`The narration server returned ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    return payload.voices || [];
 }
 
 // Pulls the sample data and format out of the RIFF header meSpeak returns.
@@ -219,9 +308,19 @@ export async function exportPassages(passages, options, dotnet) {
 
     exportCancelled = false;
 
-    await notify(dotnet, 'loading', 0, text.length, 'Starting the offline speech engine');
-    await ensureMespeak();
-    await ensureVoice(options.voice);
+    // The server engine needs no local loading, and its voices are piper ids rather than
+    // the bundled meSpeak ones, so the two engines are prepared differently.
+    const useServer = options.engine === 'server';
+
+    if (useServer) {
+        await notify(dotnet, 'loading', 0, text.length, 'Contacting the narration server');
+    } else {
+        await notify(dotnet, 'loading', 0, text.length, 'Starting the offline speech engine');
+        await ensureMespeak();
+        await ensureVoice(options.voice);
+    }
+
+    const synthesize = useServer ? synthesizeServer : synthesizeOffline;
 
     const format = options.format === 'wav' ? 'wav' : 'mp3';
     let encoder = null;

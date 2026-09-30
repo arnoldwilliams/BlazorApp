@@ -28,3 +28,8 @@ packages/
 
 ## Tooling
 .agent_tmp/
+
+## Narration engine binaries
+# Downloaded by TtsServer/scripts/setup-voices.sh: the piper build is platform specific
+# and the voice models are large, so neither belongs in version control.
+TtsServer/engines/

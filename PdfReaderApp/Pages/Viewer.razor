@@ -5,6 +5,7 @@
 @inject PdfInterop Pdf
 @inject SpeechInterop Speech
 @inject AudioExportService Audio
+@inject NarrationServerClient Narration
 @inject OcrService Ocr
 @inject IJSRuntime JS
 @implements IPdfDocumentHost
@@ -342,11 +343,29 @@
                     </div>
 
                     <div class="mb-2">
+                        <label class="form-label small mb-1" for="export-engine">Engine</label>
+                        <select id="export-engine" class="form-select form-select-sm" @bind="ExportEngine" @bind:after="OnExportEngineChanged">
+                            <option value="@AudioExportEngine.Server" disabled="@(!NarrationServerAvailable)">
+                                Narrator voice@(NarrationServerAvailable ? "" : " (unavailable)")
+                            </option>
+                            <option value="@AudioExportEngine.Offline">Offline (built in)</option>
+                        </select>
+                        @if (ExportEngine == AudioExportEngine.Server)
+                        {
+                            <div class="form-text">Neural voice, matching live reading.</div>
+                        }
+                        else if (!NarrationServerAvailable && !string.IsNullOrEmpty(NarrationServerReason))
+                        {
+                            <div class="form-text">@NarrationServerReason</div>
+                        }
+                    </div>
+
+                    <div class="mb-2">
                         <label class="form-label small mb-1" for="export-voice">Voice</label>
                         <select id="export-voice" class="form-select form-select-sm" @bind="ExportVoice">
                             @foreach (var voice in ExportVoices)
                             {
-                                <option value="@voice">@DescribeExportVoice(voice)</option>
+                                <option value="@voice.Value">@voice.Label</option>
                             }
                         </select>
                     </div>
@@ -523,6 +542,12 @@
 
     private string ExportVoice { get; set; } = "en-us";
 
+    private AudioExportEngine ExportEngine { get; set; } = AudioExportEngine.Offline;
+
+    private bool NarrationServerAvailable { get; set; }
+
+    private string NarrationServerReason { get; set; } = string.Empty;
+
     private double ExportRate { get; set; } = 1.0;
 
     private int ExportGapMs { get; set; } = 250;
@@ -537,9 +562,23 @@
 
     private AudioExportResult? LastExport { get; set; }
 
-    private readonly List<string> exportVoices = ["en-us", "en", "de", "es", "fr"];
+    private readonly List<(string Value, string Label)> offlineExportVoices =
+    [
+        ("en-us", "English (US)"),
+        ("en", "English"),
+        ("de", "German"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+    ];
 
-    private IReadOnlyList<string> ExportVoices => exportVoices;
+    private readonly List<(string Value, string Label)> serverExportVoices = [];
+
+    /// <summary>
+    /// Voices for the selected engine. The two engines have unrelated voice sets, so the
+    /// list is rebuilt when the engine changes rather than merged.
+    /// </summary>
+    private IReadOnlyList<(string Value, string Label)> ExportVoices
+        => ExportEngine == AudioExportEngine.Server ? serverExportVoices : offlineExportVoices;
 
     private bool CanExport => DocumentLoaded && ReadAloud.IsReady && !IsExporting;
 
@@ -594,6 +633,8 @@
             {
                 AudioSupported = false;
             }
+
+            await ProbeNarrationServerAsync();
         }
 
         if (needsVisibilityRefresh)
@@ -836,16 +877,6 @@
         }
     }
 
-    private static string DescribeExportVoice(string voice) => voice switch
-    {
-        "en" => "English",
-        "en-us" => "English (US)",
-        "de" => "German",
-        "es" => "Spanish",
-        "fr" => "French",
-        _ => voice,
-    };
-
     private void OnExportRateChanged(ChangeEventArgs args)
     {
         if (double.TryParse(args.Value?.ToString(), out var rate))
@@ -864,6 +895,69 @@
 
     private void OnExportDownloadChanged(ChangeEventArgs args)
         => ExportDownloadAutomatically = args.Value is true;
+
+    /// <summary>
+    /// Checks whether the narration server is usable and, if so, offers it as the default
+    /// engine so exported audio matches the voice used for live reading.
+    /// </summary>
+    private async Task ProbeNarrationServerAsync()
+    {
+        if (!Narration.IsConfigured)
+        {
+            NarrationServerAvailable = false;
+            NarrationServerReason = "No narration server is configured.";
+            return;
+        }
+
+        try
+        {
+            var status = await Narration.ProbeAsync();
+            NarrationServerAvailable = status.Available;
+            NarrationServerReason = status.Reason;
+
+            if (!status.Available)
+            {
+                return;
+            }
+
+            var voices = await Narration.GetVoicesAsync();
+            serverExportVoices.Clear();
+            foreach (var voice in voices)
+            {
+                serverExportVoices.Add((voice.Id, DescribeServerVoice(voice)));
+            }
+
+            if (serverExportVoices.Count > 0)
+            {
+                ExportEngine = AudioExportEngine.Server;
+                ExportVoice = serverExportVoices[0].Value;
+            }
+        }
+        catch (JSException)
+        {
+            NarrationServerAvailable = false;
+            NarrationServerReason = "The narration server could not be reached.";
+        }
+    }
+
+    private static string DescribeServerVoice(NarrationVoice voice)
+    {
+        var language = string.IsNullOrEmpty(voice.Language) ? string.Empty : $" ({voice.Language})";
+        return $"{voice.Name}{language}";
+    }
+
+    /// <summary>Switches the voice list over to the newly selected engine.</summary>
+    private void OnExportEngineChanged()
+    {
+        if (ExportEngine == AudioExportEngine.Server && serverExportVoices.Count > 0)
+        {
+            ExportVoice = serverExportVoices[0].Value;
+        }
+        else if (ExportEngine == AudioExportEngine.Offline && offlineExportVoices.Count > 0)
+        {
+            ExportVoice = offlineExportVoices[0].Value;
+        }
+    }
 
     private async Task StartExport()
     {
@@ -907,6 +1001,8 @@
             var options = new AudioExportOptions
             {
                 Format = ExportFormat,
+                Engine = ExportEngine,
+                ServerUrl = Narration.BaseUrl,
                 Voice = ExportVoice,
                 Rate = ExportRate,
                 Pitch = 1.0,

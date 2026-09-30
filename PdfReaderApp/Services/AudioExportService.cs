@@ -15,12 +15,30 @@ public enum AudioExportScope
     CurrentPage,
 }
 
+/// <summary>Which engine synthesises the exported audio.</summary>
+public enum AudioExportEngine
+{
+    /// <summary>The bundled offline engine. Always available, but a synthetic voice.</summary>
+    Offline,
+
+    /// <summary>
+    /// The narration server. Matches the voice used for live reading, but needs the
+    /// server to be running.
+    /// </summary>
+    Server,
+}
+
 public sealed class AudioExportOptions
 {
     public AudioFormat Format { get; set; } = AudioFormat.Mp3;
 
-    /// <summary>Offline voice id, such as "en-us" or "de".</summary>
+    public AudioExportEngine Engine { get; set; } = AudioExportEngine.Offline;
+
+    /// <summary>Voice id. Interpreted by whichever engine is selected.</summary>
     public string Voice { get; set; } = "en-us";
+
+    /// <summary>Base URL of the narration server, used when <see cref="Engine"/> is server.</summary>
+    public string ServerUrl { get; set; } = string.Empty;
 
     /// <summary>Speech rate as a multiple of normal speed.</summary>
     public double Rate { get; set; } = 1.0;
@@ -129,6 +147,8 @@ public sealed class AudioExportService : IAsyncDisposable
         var payload = new
         {
             format = options.Format == AudioFormat.Wav ? "wav" : "mp3",
+            engine = options.Engine == AudioExportEngine.Server ? "server" : "offline",
+            serverUrl = options.ServerUrl,
             voice = options.Voice,
             speed = options.Rate,
             pitch = options.Pitch,

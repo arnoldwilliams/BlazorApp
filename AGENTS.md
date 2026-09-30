@@ -5,22 +5,36 @@
 `PdfReaderApp` — a .NET 10 Blazor WebAssembly PDF reader with read-aloud support.
 Located in `PdfReaderApp/`.
 
+`TtsServer` — an optional ASP.NET Core API that narrates text with a neural voice.
+Located in `TtsServer/`. The reader works without it.
+
 ## Build and run
 
 ```bash
 export PATH="$HOME/.dotnet:$PATH"
+
+# The reader
 cd PdfReaderApp
 dotnet build
 dotnet run --no-launch-profile --urls "http://0.0.0.0:12000"
+
+# The narration server (optional)
+cd TtsServer
+./scripts/setup-voices.sh          # once, downloads the engine and voices
+dotnet run --no-launch-profile --urls "http://0.0.0.0:12001"
 ```
 
 - The SDK lives in `~/.dotnet`, so `dotnet` needs that on `PATH`.
+- `BlazorApp.slnx` at the repository root covers both projects.
 - `wwwroot` static assets are copied into the WASM output at build time. After
   editing anything under `wwwroot/` (JS, CSS, html) you must rebuild before the
   running server serves the new version. Editing a `wwwroot` file alone is not
   picked up by an already-running `dotnet run`.
 - There is no test project; verify in a browser. `playwright` and `chromium` are
-  available (`/usr/bin/chromium`, launch with `--no-sandbox`).
+  available (`/usr/bin/chromium`, launch with `--no-sandbox`). Ready-made
+  Playwright checks live in `tests/`; see `tests/README.md`. Note that
+  `test_narration_fallback.py` requires the narration server to be *stopped* and
+  `test_narration_server.py` requires it to be *running*.
 
 ## Architecture
 
@@ -34,7 +48,12 @@ dotnet run --no-launch-profile --urls "http://0.0.0.0:12000"
 - `Services/ReadAloudController.cs` — chunking, playback state, highlight ranges.
 - `Services/TextChunker.cs` — splits page text into speakable passages.
 - `Services/AudioExportService.cs` — wrapper over `wwwroot/js/audioExport.js`,
-  which renders passages to WAV/MP3 files offline.
+  which renders passages to WAV/MP3 files.
+- `Services/NarrationServerClient.cs` — wrapper over the narration server API,
+  including the health probe that decides whether it can be offered.
+- `TtsServer/` — the optional narration API (`Program.cs`), the voice catalog
+  shared with the reader (`VoiceCatalog.cs`) and the piper subprocess wrapper
+  (`PiperEngine.cs`).
 
 ## Audio export
 
@@ -57,6 +76,41 @@ converts the UI multipliers into these ranges.
 Voice files are resolved by meSpeak relative to the directory of its own script,
 so paths are written as `voices/en/en-us.json`, not `./lib/mespeak/voices/...`.
 A doubled path is a 404 and surfaces as an opaque "file error" from the worker.
+
+### Why there are two engines
+
+Live reading and export use different engines, and the voices therefore do not
+match unless the narration server is used:
+
+- Read aloud uses the **Web Speech API**. Its voices come from the operating
+  system, so they are the good neural ones, but the API is playback only. It
+  gives no audio buffer and there is no way to capture one from a web page.
+- Export must produce a file, so it needs an engine that can return samples.
+  The bundled meSpeak can, but it is a formant synthesiser and sounds robotic.
+
+`AudioExportEngine.Server` closes that gap by asking `TtsServer` to synthesise
+each passage with piper, a neural engine, and returning WAV to the browser. The
+browser still does the assembly and MP3 encoding, so the server never needs an
+encoder.
+
+The server is optional, and the reader must keep working without it:
+
+- `NarrationServerClient.ProbeAsync` hits `/api/health` on startup. If it fails,
+  the narrator option is shown as unavailable and disabled, and the export panel
+  falls back to `Offline`.
+- A probe against a stopped server logs `ERR_CONNECTION_REFUSED` in the browser
+  console. That is the browser reporting the failed fetch, not an application
+  error; no exception escapes.
+- `synthesizeServer` throws a plain `Error` with a readable message for non-2xx
+  responses, which `StartExport` turns into a status message.
+
+The two engines have unrelated voice ids, so the voice dropdown is rebuilt when
+the engine changes rather than merged. `TtsServer/VoiceCatalog.cs` is the single
+source of truth for server voice ids; the reader never hardcodes them.
+
+`wwwroot/appsettings.json` holds `NarrationServer:BaseUrl`. Point it at wherever
+the server runs. CORS on the server must allow the reader's origin
+(`Cors:Origins` in `TtsServer/appsettings.json`).
 
 ## OCR (scanned pages)
 
