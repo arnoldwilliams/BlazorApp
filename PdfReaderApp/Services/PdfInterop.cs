@@ -94,6 +94,26 @@ public sealed class PdfInterop : IAsyncDisposable
         return await module!.InvokeAsync<PdfPageText>("getPageText", documentId, pageNumber);
     }
 
+    /// <summary>
+    /// Stores recognised text for a page. From here on the page reports this text instead
+    /// of whatever pdf.js can extract, which is what makes a scanned page readable.
+    /// </summary>
+    public async Task SetPageTextOverrideAsync(string documentId, OcrPageResult result)
+    {
+        await InitializeAsync();
+        await module!.InvokeVoidAsync("setPageTextOverride", documentId, result.PageNumber, result.Text, result.Spans);
+    }
+
+    public async Task ClearTextOverridesAsync(string documentId)
+    {
+        if (module is null)
+        {
+            return;
+        }
+
+        await module.InvokeVoidAsync("clearTextOverrides", documentId);
+    }
+
     /// <summary>Maps text spans to offsets in the page text so spoken ranges can highlight them.</summary>
     public async Task ApplySpanOffsetsAsync(ElementReference container, IReadOnlyList<PageTextSpanRange> ranges)
     {

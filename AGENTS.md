@@ -58,6 +58,34 @@ Voice files are resolved by meSpeak relative to the directory of its own script,
 so paths are written as `voices/en/en-us.json`, not `./lib/mespeak/voices/...`.
 A doubled path is a 404 and surfaces as an opaque "file error" from the worker.
 
+## OCR (scanned pages)
+
+`Services/OcrService.cs` drives Tesseract.js (vendored under `wwwroot/lib/tesseract`)
+through `wwwroot/js/ocr.js` to give scanned, image-only pages a selectable text
+layer. Results are stored as a page text override in `pdfInterop.js`, so the rest
+of the app (read-aloud, highlight, export) treats an OCR page like any other.
+
+Coordinate spaces are the whole game here, and there are three of them:
+
+- The image Tesseract was given, in pixels.
+- The page's own PDF coordinate space, in points, measured from the bottom left.
+- The displayed page, in CSS pixels, which is the page scaled and rotated.
+
+`buildOcrPageModel` converts recognised pixel boxes into the page's own space with
+`viewport.convertToPdfPoint`, and `renderOcrTextLayer` converts them back to the
+displayed space with `viewport.convertToViewportPoint`. Storing boxes in page
+space is what makes them survive rotation and zoom; storing them as fractions of
+the image does not, because the image axes do not line up with the page axes once
+the page is rotated.
+
+- `getPageViewport` must return the real pdf.js `PageViewport`. Its conversion
+  methods are the point; a plain object with the same width and height throws
+  "not a function" at the first conversion.
+- Recognition always runs at rotation 0. Tesseract cannot read sideways text, so
+  the viewer's rotation is applied afterwards when the boxes are mapped back.
+- `renderOcrTextLayer` takes the caller's `scale`. Hardcoding `1` leaves the layer
+  laid out for an unzoomed page and the spans drift as soon as the page is zoomed.
+
 ## Gotchas
 
 - A Blazor method invoked from JS via `invokeMethodAsync` must carry

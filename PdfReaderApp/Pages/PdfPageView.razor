@@ -28,6 +28,12 @@
     /// <summary>When true the page is close enough to the viewport to be painted.</summary>
     [Parameter] public bool Render { get; set; }
 
+    /// <summary>
+    /// Changes when the page's text has been rewritten (by OCR). The canvas is left alone
+    /// and only the text layer is rebuilt, because the image on the page has not changed.
+    /// </summary>
+    [Parameter] public int TextRevision { get; set; }
+
     [Parameter] public IReadOnlyList<PageTextSpanRange>? SpanOffsets { get; set; }
 
     [Parameter] public PageHighlight? Highlight { get; set; }
@@ -41,6 +47,7 @@
     private double renderedZoom = -1;
     private double renderedRotation = -1;
     private string documentIdRendered = string.Empty;
+    private int renderedTextRevision = -1;
     private string? appliedOffsetsKey;
     private string? appliedHighlightKey;
 
@@ -61,11 +68,38 @@
             return;
         }
 
+        // Text that changed without the image changing (an OCR pass) only needs the text
+        // layer rebuilt, so the canvas render is deliberately skipped here.
+        if (Render && hasRendered && renderedTextRevision != TextRevision)
+        {
+            await RenderTextLayerAsync();
+            return;
+        }
+
         if (hasRendered)
         {
             await ApplySpanOffsetsAsync();
             await ApplyHighlightAsync();
         }
+    }
+
+    private async Task RenderTextLayerAsync()
+    {
+        try
+        {
+            await Pdf.RenderTextLayerAsync(DocumentId, PageNumber, textLayerRef, Zoom, Rotation);
+        }
+        catch (JSException)
+        {
+            // The text layer may have been detached by a fast navigation.
+        }
+
+        renderedTextRevision = TextRevision;
+        appliedOffsetsKey = null;
+        appliedHighlightKey = null;
+
+        await ApplySpanOffsetsAsync();
+        await ApplyHighlightAsync();
     }
 
     private async Task RenderPageAsync()
@@ -88,6 +122,7 @@
         renderedZoom = Zoom;
         renderedRotation = Rotation;
         documentIdRendered = DocumentId;
+        renderedTextRevision = TextRevision;
         appliedOffsetsKey = null;
         appliedHighlightKey = null;
         isRendering = false;

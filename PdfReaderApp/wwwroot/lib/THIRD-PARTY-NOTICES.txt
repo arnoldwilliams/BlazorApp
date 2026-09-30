@@ -19,3 +19,24 @@ pdf.js
   Source: https://mozilla.github.io/pdf.js/
   Licence: Apache-2.0
   Files: ../pdfjs/*
+
+tesseract.js (v5)
+  Used for optical character recognition of scanned pages, entirely in the browser.
+  Source: https://github.com/naptha/tesseract.js
+  Licence: Apache-2.0
+  Files: tesseract/tesseract.min.js, tesseract/worker.min.js,
+         tesseract/LICENSE-tesseract.js.txt
+
+tesseract.js-core (v5, the SIMD + LSTM WebAssembly build of the Tesseract engine)
+  Used by tesseract.js to run recognition.
+  Source: https://github.com/naptha/tesseract.js-core
+  Licence: Apache-2.0
+  Files: tesseract/tesseract-core-simd-lstm.wasm.js,
+         tesseract/LICENSE-tesseract.js-core.txt
+
+Tesseract language data (eng.traineddata)
+  Used as the English recognition model.
+  Source: https://github.com/tesseract-ocr/tessdata (tag 4.0.0)
+  Licence: Apache-2.0
+  Files: tesseract/eng.traineddata
+

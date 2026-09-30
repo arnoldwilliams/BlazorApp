@@ -58,6 +58,76 @@ public sealed record PageTextSpanRange(int Num, int Start, int Length)
 /// <summary>Character range of a page that is currently being spoken.</summary>
 public sealed record PageHighlight(int PageNumber, int Start, int Length);
 
+/// <summary>A word recognised by OCR, with the box it occupies on the page.</summary>
+public sealed class OcrWord
+{
+    [JsonPropertyName("num")]
+    public int Num { get; set; }
+
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>Offset of this word inside the recognised page text.</summary>
+    [JsonPropertyName("start")]
+    public int Start { get; set; }
+
+    [JsonPropertyName("bbox")]
+    public OcrBox? BoundingBox { get; set; }
+}
+
+public sealed class OcrBox
+{
+    [JsonPropertyName("x0")]
+    public double X0 { get; set; }
+
+    [JsonPropertyName("y0")]
+    public double Y0 { get; set; }
+
+    [JsonPropertyName("x1")]
+    public double X1 { get; set; }
+
+    [JsonPropertyName("y1")]
+    public double Y1 { get; set; }
+}
+
+/// <summary>Result of recognising a single page.</summary>
+public sealed class OcrPageResult
+{
+    [JsonPropertyName("pageNumber")]
+    public int PageNumber { get; set; }
+
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = string.Empty;
+
+    [JsonPropertyName("spans")]
+    public List<OcrWord> Spans { get; set; } = [];
+
+    [JsonPropertyName("confidence")]
+    public double Confidence { get; set; }
+
+    [JsonPropertyName("wordCount")]
+    public int WordCount { get; set; }
+
+    [JsonPropertyName("scale")]
+    public double Scale { get; set; }
+}
+
+/// <summary>OCR languages offered by the viewer.</summary>
+public sealed record OcrLanguage(string Code, string Name);
+
+/// <summary>Which pages an OCR run should cover.</summary>
+public enum OcrScopeOption
+{
+    /// <summary>Only the page currently on screen.</summary>
+    CurrentPage,
+
+    /// <summary>Every page in the document.</summary>
+    WholeDocument,
+
+    /// <summary>Only pages that carry no extractable text, i.e. the scanned ones.</summary>
+    MissingTextOnly,
+}
+
 /// <summary>Maps every text span on a page back to its offset in the page text.</summary>
 public sealed class PageTextMap
 {

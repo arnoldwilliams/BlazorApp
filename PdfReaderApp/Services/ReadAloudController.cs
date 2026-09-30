@@ -118,50 +118,119 @@ public sealed class ReadAloudController : IDisposable
         for (var pageNumber = 1; pageNumber <= pageCount; pageNumber++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var pageText = await pdf.GetPageTextAsync(document, pageNumber);
-            var text = pageText?.Text ?? string.Empty;
-            var ranges = BuildRanges(text, pageText?.Spans);
-
-            pageMaps[pageNumber] = new PageTextMap(pageNumber, text, ranges);
-
-            if (host is not null)
-            {
-                await host.ApplySpanOffsetsAsync(pageNumber, ranges);
-            }
-
-            var cursor = 0;
-            foreach (var part in TextChunker.Split(text))
-            {
-                // Locate the part from the previous position so repeated text maps correctly.
-                var start = text.IndexOf(part, cursor, StringComparison.Ordinal);
-                if (start < 0)
-                {
-                    start = text.IndexOf(part, StringComparison.Ordinal);
-                }
-
-                if (start < 0)
-                {
-                    start = cursor;
-                }
-
-                cursor = Math.Min(text.Length, start + part.Length);
-
-                chunks.Add(new TextChunk
-                {
-                    Index = index++,
-                    PageNumber = pageNumber,
-                    Start = start,
-                    Length = part.Length,
-                    Text = part,
-                });
-            }
+            index = await PreparePageAsync(document, pageNumber, index);
         }
 
+        await FinalizePreparationAsync();
+    }
+
+    /// <summary>
+    /// Rebuilds the chunks and span offsets for one page after its text changed, which is
+    /// how a page that has just been through OCR replaces the text it had before.
+    /// </summary>
+    public async Task RebuildPageAsync(string document, int pageNumber, CancellationToken cancellationToken = default)
+    {
+        if (documentId != document)
+        {
+            await PrepareAsync(document, pageNumber, cancellationToken);
+            return;
+        }
+
+        var wasPreparing = Status == ReadAloudStatus.Preparing;
+        var wasReading = IsActive;
+
+        if (wasReading)
+        {
+            await StopAsync();
+        }
+
+        if (!wasPreparing)
+        {
+            Status = ReadAloudStatus.Preparing;
+        }
+
+        // The page is being rewritten, so any chunks it contributed are stale.
+        chunks.RemoveAll(chunk => chunk.PageNumber == pageNumber);
+
+        // Re-number so chunk indices stay dense; the audio export and the position display
+        // both assume index equals position in the list.
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            chunks[i] = new TextChunk
+            {
+                Index = i,
+                PageNumber = chunks[i].PageNumber,
+                Start = chunks[i].Start,
+                Length = chunks[i].Length,
+                Text = chunks[i].Text,
+            };
+        }
+
+        var insertAt = chunks.FindIndex(chunk => chunk.PageNumber > pageNumber);
+        if (insertAt < 0)
+        {
+            insertAt = chunks.Count;
+        }
+
+        await PreparePageAsync(document, pageNumber, insertAt, cancellationToken);
+        await FinalizePreparationAsync();
+    }
+
+    /// <summary>
+    /// Reads one page, records its span offsets and inserts its chunks starting at
+    /// <paramref name="index"/>. Returns the next free chunk index.
+    /// </summary>
+    private async Task<int> PreparePageAsync(string document, int pageNumber, int index, CancellationToken cancellationToken = default)
+    {
+        var pageText = await pdf.GetPageTextAsync(document, pageNumber);
+        var text = pageText?.Text ?? string.Empty;
+        var ranges = BuildRanges(text, pageText?.Spans);
+
+        pageMaps[pageNumber] = new PageTextMap(pageNumber, text, ranges);
+
+        if (host is not null)
+        {
+            await host.ApplySpanOffsetsAsync(pageNumber, ranges);
+        }
+
+        var cursor = 0;
+        foreach (var part in TextChunker.Split(text))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Locate the part from the previous position so repeated text maps correctly.
+            var start = text.IndexOf(part, cursor, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                start = text.IndexOf(part, StringComparison.Ordinal);
+            }
+
+            if (start < 0)
+            {
+                start = cursor;
+            }
+
+            cursor = Math.Min(text.Length, start + part.Length);
+
+            chunks.Add(new TextChunk
+            {
+                Index = index++,
+                PageNumber = pageNumber,
+                Start = start,
+                Length = part.Length,
+                Text = part,
+            });
+        }
+
+        return index;
+    }
+
+    private async Task FinalizePreparationAsync()
+    {
         if (chunks.Count == 0)
         {
             Status = ReadAloudStatus.Error;
-            ErrorMessage = "No readable text was found. This PDF may be a scanned image without a text layer.";
+            ErrorMessage = "No readable text was found. This PDF may be a scanned image without a text layer. Try running OCR.";
         }
         else
         {
@@ -245,6 +314,11 @@ public sealed class ReadAloudController : IDisposable
     /// <summary>Span offsets for a page, used by the viewer to align highlights with the text layer.</summary>
     public IReadOnlyList<PageTextSpanRange>? GetSpanOffsetsForPage(int pageNumber)
         => pageMaps.TryGetValue(pageNumber, out var map) ? map.SpanRanges : null;
+
+    /// <summary>True when a page yielded any extractable text, which is what OCR uses to
+    /// decide whether a page is scanned.</summary>
+    public bool HasText(int pageNumber)
+        => pageMaps.TryGetValue(pageNumber, out var map) && !string.IsNullOrWhiteSpace(map.Text);
 
     /// <summary>Restarts the document from the first chunk.</summary>
     public async Task RestartAsync()

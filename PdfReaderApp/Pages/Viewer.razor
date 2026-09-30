@@ -5,6 +5,7 @@
 @inject PdfInterop Pdf
 @inject SpeechInterop Speech
 @inject AudioExportService Audio
+@inject OcrService Ocr
 @inject IJSRuntime JS
 @implements IPdfDocumentHost
 @implements IPdfPageVisibilityHost
@@ -102,6 +103,7 @@
                                  Zoom="@Zoom"
                                  Rotation="@RotationDegrees"
                                  Render="@pageEntry.ShouldRender"
+                                 TextRevision="@pageEntry.RenderedRevision"
                                  SpanOffsets="@GetSpanOffsets(pageEntry.PageNumber)"
                                  Highlight="@GetHighlight(pageEntry.PageNumber)" />
                 }
@@ -114,6 +116,7 @@
                              Zoom="@Zoom"
                              Rotation="@RotationDegrees"
                              Render="true"
+                             TextRevision="@GetTextRevision(CurrentPage)"
                              SpanOffsets="@GetSpanOffsets(CurrentPage)"
                              Highlight="@GetHighlight(CurrentPage)" />
             }
@@ -226,6 +229,68 @@
                     <input class="form-check-input" type="checkbox" id="follow-toggle" checked="@FollowAloud" @onchange="OnFollowChanged" />
                     <label class="form-check-label small" for="follow-toggle">Follow along while reading</label>
                 </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h2 class="sidebar-title">Scan and OCR</h2>
+                @if (!DocumentLoaded)
+                {
+                    <p class="text-muted small mb-0">Open a PDF to recognise text in scanned pages.</p>
+                }
+                else if (IsRecognizing)
+                {
+                    <div class="progress mb-2" style="height: 6px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                             style="@FormattableString.Invariant($"width: {Math.Clamp(OcrPercent, 0, 100):0}%")"></div>
+                    </div>
+                    <p class="text-muted small mb-2">@OcrStatusMessage</p>
+                    <button class="btn btn-outline-danger btn-sm w-100" @onclick="CancelOcr">Cancel OCR</button>
+                }
+                else
+                {
+                    <p class="text-muted small mb-2">
+                        Recognise text on pages that have no text layer, then read or export the result.
+                    </p>
+                    <div class="row g-2 mb-2">
+                        <div class="col-7">
+                            <label class="form-label small mb-1" for="ocr-language">Language</label>
+                            <select id="ocr-language" class="form-select form-select-sm" @bind="OcrLanguage">
+                                @foreach (var language in OcrLanguages)
+                                {
+                                    <option value="@language.Code">@language.Name</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label small mb-1" for="ocr-quality">Quality</label>
+                            <select id="ocr-quality" class="form-select form-select-sm" @bind="OcrScale">
+                                <option value="1.5">Fast</option>
+                                <option value="2.0">Balanced</option>
+                                <option value="3.0">Best</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="ocr-scope">Pages</label>
+                        <select id="ocr-scope" class="form-select form-select-sm" @bind="OcrScope">
+                            <option value="@OcrScopeOption.CurrentPage">Current page</option>
+                            <option value="@OcrScopeOption.WholeDocument">Whole document</option>
+                            <option value="@OcrScopeOption.MissingTextOnly">Pages with no text layer</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary btn-sm w-100" @onclick="RunOcrAsync">Recognise text</button>
+                    @if (OcrPagesRecognised > 0)
+                    {
+                        <p class="text-muted small mb-0 mt-2">
+                            @OcrPagesRecognised page(s) recognised, average confidence
+                            @($"{OcrAverageConfidence:0}%").
+                        </p>
+                    }
+                    else if (OcrNotice is not null)
+                    {
+                        <p class="text-muted small mb-0 mt-2">@OcrNotice</p>
+                    }
+                }
             </div>
 
             <div class="sidebar-section">
@@ -387,6 +452,30 @@
     private bool isLoading;
     private bool isDisposed;
     private bool needsVisibilityRefresh;
+
+    private CancellationTokenSource? ocrCancellation;
+    private readonly HashSet<int> ocrPages = [];
+    private double ocrConfidenceTotal;
+
+    private string OcrLanguage { get; set; } = "eng";
+
+    private double OcrScale { get; set; } = 2.0;
+
+    private OcrScopeOption OcrScope { get; set; } = OcrScopeOption.MissingTextOnly;
+
+    private bool IsRecognizing { get; set; }
+
+    private string OcrStatusMessage { get; set; } = string.Empty;
+
+    private double OcrPercent { get; set; }
+
+    private string? OcrNotice { get; set; }
+
+    private static IReadOnlyList<OcrLanguage> OcrLanguages => OcrService.Languages;
+
+    private int OcrPagesRecognised => ocrPages.Count;
+
+    private double OcrAverageConfidence => ocrPages.Count == 0 ? 0 : ocrConfidenceTotal / ocrPages.Count;
 
     private string DocumentId { get; set; } = string.Empty;
 
@@ -929,6 +1018,191 @@
         CurrentPageText = pageText?.Text ?? string.Empty;
     }
 
+    /// <summary>
+    /// Runs OCR over the selected pages, then folds each recognised page back into the
+    /// read aloud text and the on screen text layer.
+    /// </summary>
+    private async Task RunOcrAsync()
+    {
+        if (!DocumentLoaded || string.IsNullOrEmpty(DocumentId) || IsRecognizing)
+        {
+            return;
+        }
+
+        var targets = SelectOcrPages();
+        if (targets.Count == 0)
+        {
+            OcrNotice = OcrScope == OcrScopeOption.MissingTextOnly
+                ? "Every page already has a text layer, so there is nothing to recognise."
+                : "There are no pages to recognise.";
+            return;
+        }
+
+        ocrCancellation?.Dispose();
+        ocrCancellation = new CancellationTokenSource();
+        var token = ocrCancellation.Token;
+
+        IsRecognizing = true;
+        OcrNotice = null;
+        OcrPercent = 0;
+        OcrStatusMessage = $"Preparing OCR for {targets.Count} page(s).";
+        StateHasChanged();
+
+        var recognised = 0;
+        var failures = new List<string>();
+
+        try
+        {
+            for (var position = 0; position < targets.Count; position++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                var pageNumber = targets[position];
+                OcrStatusMessage = $"Page {pageNumber} of {PageCount} ({(position + 1)}/{targets.Count})";
+                OcrPercent = 0;
+                StateHasChanged();
+
+                var pageIndex = pageNumber;
+                var result = await Ocr.RecognizePageAsync(
+                    DocumentId,
+                    pageNumber,
+                    OcrLanguage,
+                    OcrScale,
+                    RotationDegrees,
+                    progress => ReportOcrProgress(pageIndex, targets.Count, position, progress),
+                    token);
+
+                if (string.IsNullOrWhiteSpace(result.Text))
+                {
+                    failures.Add($"page {pageNumber} (no text found)");
+                    continue;
+                }
+
+                // Publish the recognised text so every reader of page text sees it, then
+                // rebuild the spans and chunks for just this page.
+                await Pdf.SetPageTextOverrideAsync(DocumentId, result);
+                await readAloudController.RebuildPageAsync(DocumentId, pageNumber, token);
+
+                ocrPages.Add(pageNumber);
+                ocrConfidenceTotal += result.Confidence;
+                recognised++;
+            }
+
+            if (ocrPages.Count > 0)
+            {
+                StatusMessage = $"Recognised {recognised} page(s). Read aloud and audio export now use the OCR text.";
+                StatusAlertClass = "success";
+            }
+
+            if (failures.Count > 0)
+            {
+                OcrNotice = $"No text found on {string.Join(", ", failures)}.";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            OcrNotice = "OCR cancelled.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"OCR failed: {ex.Message}";
+            StatusAlertClass = "danger";
+        }
+        finally
+        {
+            IsRecognizing = false;
+            OcrPercent = 0;
+            OcrStatusMessage = string.Empty;
+
+            await Ocr.TerminateAsync();
+
+            // The text layer and the current page preview both change when OCR lands.
+            InvalidateRenderedTextLayers();
+            await RefreshCurrentPageTextAsync();
+
+            ocrCancellation?.Dispose();
+            ocrCancellation = null;
+
+            StateHasChanged();
+
+            // tesseract can report progress for a moment after the last page returns. The
+            // bridge is kept alive until those ticks have been absorbed and dropped.
+            await Task.Delay(1200);
+        }
+    }
+
+    private void CancelOcr() => ocrCancellation?.Cancel();
+
+    private void ReportOcrProgress(int pageNumber, int totalPages, int position, OcrProgress progress)
+    {
+        // The engine only reports its own page, so the overall figure combines the pages
+        // finished so far with the fraction of the current one.
+        var overall = (position + Math.Clamp(progress.Progress, 0, 1)) / totalPages * 100;
+
+        _ = InvokeAsync(() =>
+        {
+            if (isDisposed)
+            {
+                return;
+            }
+
+            OcrPercent = overall;
+            OcrStatusMessage = $"Page {pageNumber} of {PageCount}: {progress.Status}";
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>Chooses which pages to recognise for the selected scope.</summary>
+    private List<int> SelectOcrPages()
+    {
+        var targets = new List<int>();
+
+        switch (OcrScope)
+        {
+            case OcrScopeOption.CurrentPage:
+                targets.Add(CurrentPage);
+                break;
+
+            case OcrScopeOption.WholeDocument:
+                for (var pageNumber = 1; pageNumber <= PageCount; pageNumber++)
+                {
+                    targets.Add(pageNumber);
+                }
+
+                break;
+
+            default:
+                // Pages that already have text are skipped, which is the useful default for
+                // a document that mixes scanned images with real text.
+                for (var pageNumber = 1; pageNumber <= PageCount; pageNumber++)
+                {
+                    if (!HasTextLayer(pageNumber))
+                    {
+                        targets.Add(pageNumber);
+                    }
+                }
+
+                break;
+        }
+
+        return targets;
+    }
+
+    /// <summary>True when the page already carries extractable text from the PDF itself.</summary>
+    private bool HasTextLayer(int pageNumber) => readAloudController.HasText(pageNumber);
+
+    /// <summary>
+    /// Drops the cached render state of every page so the text layers are rebuilt. OCR
+    /// changes the spans underneath the canvas, and a page will not re-render on its own.
+    /// </summary>
+    private void InvalidateRenderedTextLayers()
+    {
+        foreach (var page in pages)
+        {
+            page.RenderedRevision++;
+        }
+    }
+
     private Task OnReadAloudChanged()
     {
         return InvokeAsync(() =>
@@ -950,6 +1224,9 @@
 
     private IReadOnlyList<PageTextSpanRange>? GetSpanOffsets(int pageNumber)
         => readAloudController.GetSpanOffsetsForPage(pageNumber);
+
+    private int GetTextRevision(int pageNumber)
+        => pageNumber >= 1 && pageNumber <= pages.Count ? pages[pageNumber - 1].RenderedRevision : 0;
 
     private PageHighlight? GetHighlight(int pageNumber)
     {
@@ -1080,6 +1357,15 @@
     {
         isDisposed = true;
 
+        ocrCancellation?.Cancel();
+        ocrCancellation?.Dispose();
+        ocrCancellation = null;
+
+        if (!string.IsNullOrEmpty(DocumentId))
+        {
+            await Pdf.ClearTextOverridesAsync(DocumentId);
+        }
+
         if (LastExport is not null)
         {
             await Audio.ReleaseAsync(LastExport.Url);
@@ -1124,5 +1410,8 @@
         public PdfPageSize Size { get; }
 
         public bool ShouldRender { get; set; }
+
+        /// <summary>Bumped when the page's text changes, so the text layer is rebuilt.</summary>
+        public int RenderedRevision { get; set; }
     }
 }
