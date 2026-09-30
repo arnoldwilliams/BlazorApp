@@ -573,26 +573,63 @@ function buildOcrPageModel(words, viewport) {
     return { text: text, spans: spans };
 }
 
-// Extracts the text of a page, returning the text and the per item offsets.
+// Extracts a page's text model and measures how much of the paper it covers.
+//
+// pdf.js reports each item's width and height already in page units, the same space the
+// scale 1 viewport uses, so the glyph boxes are summed directly.
+async function readPageTextModel(documentId, pageNumber) {
+    const page = await getPage(documentId, pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const content = await page.getTextContent();
+    const model = buildPageModel(content.items);
+
+    const pageArea = Math.max(1, viewport.width * viewport.height);
+    let covered = 0;
+    let chars = 0;
+
+    for (const item of content.items) {
+        if (!item || typeof item.str !== 'string') {
+            continue;
+        }
+
+        const text = item.str.trim();
+        if (text.length === 0) {
+            continue;
+        }
+
+        chars += text.length;
+        covered += Math.abs(item.width || 0) * Math.abs(item.height || 0);
+    }
+
+    model.chars = chars;
+    model.coverage = Math.min(1, covered / pageArea);
+    return model;
+}
+
 async function getPageText(documentId, pageNumber) {
     // An OCR pass wins over pdf.js: a scanned page has no usable text layer, and where
     // OCR has run it is the only source that reflects what is actually on the page.
     const override = textOverrides.get(overrideKey(documentId, pageNumber));
     if (override) {
-        return { text: override.text, spans: override.spans };
+        return {
+            text: override.text,
+            spans: override.spans,
+            chars: override.text.length,
+            coverage: 1,
+        };
     }
 
-    const page = await getPage(documentId, pageNumber);
-    const content = await page.getTextContent();
-    const model = buildPageModel(content.items);
+    const model = await readPageTextModel(documentId, pageNumber);
 
     if (model.text.length === 0) {
-        return { text: '', spans: [] };
+        return { text: '', spans: [], chars: 0, coverage: 0 };
     }
 
     return {
         text: model.text,
         spans: model.spans.map((span) => ({ num: span.num, text: span.text, start: span.start })),
+        chars: model.chars,
+        coverage: model.coverage,
     };
 }
 

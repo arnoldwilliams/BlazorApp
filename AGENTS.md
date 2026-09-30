@@ -86,6 +86,26 @@ the page is rotated.
 - `renderOcrTextLayer` takes the caller's `scale`. Hardcoding `1` leaves the layer
   laid out for an unzoomed page and the spans drift as soon as the page is zoomed.
 
+## Deciding whether a page is scanned
+
+The default OCR scope recognises "pages that have no text layer", and that decision is
+made per page from `getPageText` in `pdfInterop.js`. A page is only treated as already
+having text when the extracted glyph boxes cover at least `MinimumTextCoverage` (1%) of
+the page and yield at least `MinimumTextCharacters` (25) characters.
+
+Testing for "some text" instead is wrong, and it is the bug this replaced. Scanners and
+PDF tools leave a stamp, page number, header or watermark on an otherwise image-only
+page. Those few characters are real text, so a non-empty check passes and the page is
+skipped, while the genuinely scanned pages around it are recognised. The symptom is an
+OCR run that misses the first page and works everywhere else.
+
+The coverage ratio separates the two cleanly, because pdf.js reports each text item's
+`width` and `height` already in page units, the same space the scale 1 viewport uses, so
+the glyph boxes are summed directly against the page area. Measured on the sample
+documents: a scanner stamp covers 0.13%, two or three lines of real text cover 1.5-1.7%,
+and a page of prose covers 6.5%. Do not push these values back through the viewport
+transform; that scales them a second time and every page clamps to 100%.
+
 ## Line breaks and the pause between passages
 
 Each passage is a separate `SpeechSynthesisUtterance`, and the browser inserts a

@@ -31,6 +31,18 @@ public sealed class PdfPageText
 
     [JsonPropertyName("spans")]
     public List<PdfTextSpan> Spans { get; set; } = [];
+
+    /// <summary>Number of non whitespace characters pdf.js extracted for the page.</summary>
+    [JsonPropertyName("chars")]
+    public int Chars { get; set; }
+
+    /// <summary>
+    /// Share of the page the extracted glyph boxes cover, 0 to 1. A scanned page that
+    /// carries only a scanner stamp, page number or watermark measures a fraction of a
+    /// percent, while a page of real text measures several percent.
+    /// </summary>
+    [JsonPropertyName("coverage")]
+    public double Coverage { get; set; }
 }
 
 /// <summary>A contiguous run of prose queued for read aloud.</summary>
@@ -131,11 +143,16 @@ public enum OcrScopeOption
 /// <summary>Maps every text span on a page back to its offset in the page text.</summary>
 public sealed class PageTextMap
 {
-    public PageTextMap(int pageNumber, string text, IReadOnlyList<PageTextSpanRange> spanRanges)
+    public PageTextMap(
+        int pageNumber,
+        string text,
+        IReadOnlyList<PageTextSpanRange> spanRanges,
+        bool hasUsableText)
     {
         PageNumber = pageNumber;
         Text = text;
         SpanRanges = spanRanges;
+        HasUsableText = hasUsableText;
     }
 
     public int PageNumber { get; }
@@ -143,4 +160,11 @@ public sealed class PageTextMap
     public string Text { get; }
 
     public IReadOnlyList<PageTextSpanRange> SpanRanges { get; }
+
+    /// <summary>
+    /// True when the page carries enough real text to read. A page that only has a
+    /// scanner stamp or a watermark on an otherwise scanned image is not usable, and OCR
+    /// should still run on it.
+    /// </summary>
+    public bool HasUsableText { get; }
 }

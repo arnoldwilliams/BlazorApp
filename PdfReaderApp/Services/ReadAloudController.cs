@@ -186,7 +186,7 @@ public sealed class ReadAloudController : IDisposable
         var text = pageText?.Text ?? string.Empty;
         var ranges = BuildRanges(text, pageText?.Spans);
 
-        pageMaps[pageNumber] = new PageTextMap(pageNumber, text, ranges);
+        pageMaps[pageNumber] = new PageTextMap(pageNumber, text, ranges, IsUsableText(pageText));
 
         if (host is not null)
         {
@@ -315,10 +315,38 @@ public sealed class ReadAloudController : IDisposable
     public IReadOnlyList<PageTextSpanRange>? GetSpanOffsetsForPage(int pageNumber)
         => pageMaps.TryGetValue(pageNumber, out var map) ? map.SpanRanges : null;
 
-    /// <summary>True when a page yielded any extractable text, which is what OCR uses to
-    /// decide whether a page is scanned.</summary>
+    /// <summary>True when a page carries enough real text to read, which is what OCR uses
+    /// to decide whether a page is scanned.</summary>
     public bool HasText(int pageNumber)
-        => pageMaps.TryGetValue(pageNumber, out var map) && !string.IsNullOrWhiteSpace(map.Text);
+        => pageMaps.TryGetValue(pageNumber, out var map) && map.HasUsableText;
+
+    /// <summary>
+    /// Minimum share of a page the extracted glyph boxes must cover to count as a text
+    /// layer. A page that only carries a scanner stamp, page number or watermark covers a
+    /// fraction of a percent and is still effectively an image, so OCR should run on it.
+    /// </summary>
+    private const double MinimumTextCoverage = 0.01;
+
+    /// <summary>Smallest character count that could plausibly be a page of text, used as a
+    /// guard for the rare document whose glyph metrics are missing.</summary>
+    private const int MinimumTextCharacters = 25;
+
+    private static bool IsUsableText(PdfPageText? pageText)
+    {
+        if (pageText is null || string.IsNullOrWhiteSpace(pageText.Text))
+        {
+            return false;
+        }
+
+        // An OCR result is stored as an override and reports full coverage; it is always
+        // usable, and re-running OCR on it would be pointless.
+        if (pageText.Coverage >= 1)
+        {
+            return true;
+        }
+
+        return pageText.Coverage >= MinimumTextCoverage && pageText.Chars >= MinimumTextCharacters;
+    }
 
     /// <summary>Restarts the document from the first chunk.</summary>
     public async Task RestartAsync()
